@@ -1,14 +1,10 @@
-name: Build STM32 Arduino HEX
+name: Build STM32F103CBT6 (Arduino)
 
 on:
   push:
-    branches: [ "**" ]
-    paths-ignore:
-      - "build/**"
-  workflow_dispatch:
-
-permissions:
-  contents: write
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
   build:
@@ -17,34 +13,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Arduino CLI and STM32 Core
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+        with:
+          version: "1.x"
+
+      - name: Add STM32 core index & install core
         run: |
-          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR=/usr/local/bin sh
           arduino-cli config init
-          arduino-cli config add board_manager.additional_urls https://github.com/stm32duino/BoardManagerFiles/raw/main/package_stmicroelectronics_index.json
+          arduino-cli config add board_manager.additional_urls https://github.com/stm32duino/BoardManagerFiles/raw/main/package_stm_index.json
           arduino-cli core update-index
           arduino-cli core install STMicroelectronics:stm32
 
-      - name: Compile Sketch to HEX
+      - name: Compile for BluePill F103CB (128K Flash)
         run: |
-          mkdir -p build
           arduino-cli compile \
-            --fqbn STMicroelectronics:stm32:GenF1:pnum=BLUEPILL_F103C8,usb=CDCgen,xserial=generic,opt=osstd \
-            --output-dir build \
-            FlightController
-
-      - name: Upload HEX Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: FlightController-STM32F103C8-HEX
-          path: build/*.hex
-
-      - name: Commit HEX to Repository
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add build/*.hex
-          if ! git diff --cached --quiet; then
-            git commit -m "Build firmware HEX [skip ci]"
-            git push
-          fi
+            --fqbn STMicroelectronics:stm32:GenF1:pnum=BLUEPILL_F103CB \
+            --export-binaries \
+            --warnings all \
+            .
