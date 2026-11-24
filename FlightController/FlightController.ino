@@ -80,8 +80,8 @@ constexpr float MAX_RATE_DPS_PER_UNIT = 500.0f;
 constexpr float DEFAULT_FLT_AMB = 0.05f;
 constexpr float DEFAULT_FLT_AMB_MIN = 0.003f;
 constexpr float PID_D_ALPHA = 0.4f;
-constexpr float DEG_TO_RAD = (float)M_PI / 180.0f;
-constexpr float RAD_TO_DEG = 180.0f / (float)M_PI;
+constexpr float FC_DEG_TO_RAD = 0.01745329251994329577f;
+constexpr float FC_RAD_TO_DEG = 57.29577951308232087680f;
 constexpr float SIN_45 = 0.70710678f;
 constexpr float COS_45 = 0.70710678f;
 
@@ -151,6 +151,9 @@ enum BenchTestMode : uint8_t {
   BENCH_TEST_MOTORS = 1,
   BENCH_TEST_PID = 2
 };
+
+enum CliValType : uint8_t;
+struct CliParam;
 
 struct DelayedRtxRespItem {
   DelayedRtxRespType type = RTX_RESP_NONE;
@@ -2400,7 +2403,7 @@ namespace SensorDriver {
       xh = x * cosf(pitch) + y * sinf(roll) * sinf(pitch) + z * cosf(roll) * sinf(pitch);
       yh = y * cosf(roll) - z * sinf(roll);
     }
-    float h = atan2f(yh, xh) * RAD_TO_DEG;
+    float h = atan2f(yh, xh) * FC_RAD_TO_DEG;
     if (isnan(h) || isinf(h)) { setFcErrorRam(FC_ERR_NAN_INF_MATH); return false; }
     heading_deg = wrapDeg0To360(h); return true;
   }
@@ -2630,9 +2633,9 @@ void stepMonitorStreamNonBlocking(uint32_t now_ms) {
   if (!mon_stream_active || (now_ms - mon_last_send_ms) < MON_STREAM_PERIOD_MS) return;
   mon_last_send_ms = now_ms;
   float q0 = orientation.q0, q1 = orientation.q1, q2 = orientation.q2, q3 = orientation.q3;
-  float r = atan2f(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2)) * RAD_TO_DEG;
-  float p = asinf(constrain(2.0f * (q0 * q2 - q3 * q1), -1.0f, 1.0f)) * RAD_TO_DEG;
-  float y = atan2f(2.0f * (q0 * q3 + q1 * q2), 1.0f - 2.0f * (q2 * q2 + q3 * q3)) * RAD_TO_DEG;
+  float r = atan2f(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2)) * FC_RAD_TO_DEG;
+  float p = asinf(constrain(2.0f * (q0 * q2 - q3 * q1), -1.0f, 1.0f)) * FC_RAD_TO_DEG;
+  float y = atan2f(2.0f * (q0 * q3 + q1 * q2), 1.0f - 2.0f * (q2 * q2 + q3 * q3)) * FC_RAD_TO_DEG;
   Serial.print("MON: err="); Serial.print((int)getActiveStatusErrorCode());
   Serial.print(" arm="); Serial.print(is_armed ? 1 : 0);
   Serial.print(" fs="); Serial.print(is_failsafe ? 1 : 0);
@@ -2958,8 +2961,8 @@ namespace CliAutoCal {
       hover_sum += thr_cmd; hover_samples++;
     }
 
-    float target_gx_rad = constrain(constrain(-roll_deg, -currentConfig.fm_roll_max, currentConfig.fm_roll_max) * 2.5f * DEG_TO_RAD, -3.0f, 3.0f);
-    float target_gy_rad = constrain(constrain(-pitch_deg, -currentConfig.fm_pitch_max, currentConfig.fm_pitch_max) * 2.5f * DEG_TO_RAD, -3.0f, 3.0f);
+    float target_gx_rad = constrain(constrain(-roll_deg, -currentConfig.fm_roll_max, currentConfig.fm_roll_max) * 2.5f * FC_DEG_TO_RAD, -3.0f, 3.0f);
+    float target_gy_rad = constrain(constrain(-pitch_deg, -currentConfig.fm_pitch_max, currentConfig.fm_pitch_max) * 2.5f * FC_DEG_TO_RAD, -3.0f, 3.0f);
     float r_cmd = rollRatePID.update(target_gx_rad - gx_rad, gx_rad, DT, false);
     float p_cmd = pitchRatePID.update(target_gy_rad - gy_rad, gy_rad, DT, false);
     float y_cmd = yawRatePID.update(0.0f - gz_rad, gz_rad, DT, false);
@@ -3396,9 +3399,9 @@ static void actMon(const char*) {
 
 static void actTestImu(const char*) {
   float q0 = orientation.q0, q1 = orientation.q1, q2 = orientation.q2, q3 = orientation.q3;
-  float r = atan2f(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2)) * RAD_TO_DEG;
-  float p = asinf(constrain(2.0f * (q0 * q2 - q3 * q1), -1.0f, 1.0f)) * RAD_TO_DEG;
-  float y = atan2f(2.0f * (q0 * q3 + q1 * q2), 1.0f - 2.0f * (q2 * q2 + q3 * q3)) * RAD_TO_DEG;
+  float r = atan2f(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2)) * FC_RAD_TO_DEG;
+  float p = asinf(constrain(2.0f * (q0 * q2 - q3 * q1), -1.0f, 1.0f)) * FC_RAD_TO_DEG;
+  float y = atan2f(2.0f * (q0 * q3 + q1 * q2), 1.0f - 2.0f * (q2 * q2 + q3 * q3)) * FC_RAD_TO_DEG;
   Serial.print("TEST_IMU: found="); Serial.print(SensorDriver::activeSensors.imu_found ? 1 : 0);
   Serial.print(" chip="); Serial.print(imuChipName((uint8_t)SensorDriver::activeSensors.imu_type));
   Serial.print(" err="); Serial.print((int)getActiveStatusErrorCode());
@@ -3510,12 +3513,6 @@ void executeCommand(const char* cmd) {
   const char* p = skipSpaces(cmd);
   if (!p || *p == '\0') return;
 
-  if (mon_stream_active && (strcmp(p, "mon_stop") == 0 || strcmp(p, "q") == 0)) {
-    mon_stream_active = false;
-    Serial.println("OK: mon_stop");
-    return;
-  }
-
   char verb[24] = {0};
   size_t v_len = 0;
   while (p[v_len] != '\0' && p[v_len] != ' ' && p[v_len] != '\t') {
@@ -3528,12 +3525,12 @@ void executeCommand(const char* cmd) {
   constexpr size_t count = sizeof(cliActions) / sizeof(cliActions[0]);
   for (size_t i = 0; i < count; i++) {
     if (strcmp(verb, cliActions[i].name) == 0) {
-      if (cliActions[i].requires_disarm && (is_armed || CliAutoCal::isFlightActive())) {
-        Serial.println("ERR: armed");
-        return;
-      }
       if (!cliActions[i].has_args && *args != '\0') {
         Serial.println("ERR: args");
+        return;
+      }
+      if (cliActions[i].requires_disarm && is_armed) {
+        Serial.println("ERR: armed");
         return;
       }
       cliActions[i].fn(args);
@@ -3551,104 +3548,107 @@ void parseCli() {
     if (c == '\r' || c == '\n') {
       if (line_pos > 0) {
         line_buf[line_pos] = '\0';
-        line_pos = 0;
         executeCommand(line_buf);
-      }
-    } else if ((uint8_t)c >= 0x20 && (uint8_t)c < 0x7F) {
-      if (line_pos < sizeof(line_buf) - 1) {
-        line_buf[line_pos++] = c;
-      } else {
         line_pos = 0;
-        Serial.println("ERR: line");
       }
+    } else if (line_pos < sizeof(line_buf) - 1) {
+      line_buf[line_pos++] = c;
+    } else {
+      line_pos = 0;
+      Serial.println("ERR: len");
     }
   }
 }
 
 // ==============================================================================
-// 11. ТАЙМЕРЫ ШИМ/ОНЕШОТ И ЦИКЛ ПОЛЁТА (250 Гц)
+// 11. ФИЛЬТРАЦИЯ, ОС ФЬЮЖН, ПИД И МОТОРЫ
 // ==============================================================================
-void setupHardwareTimers() {
-  if (currentConfig.esc_prot == 1) {
-    tim2.pause();
-    tim2.setPrescaleFactor((SystemCoreClock / TIM2_ONESHOT_HZ) > 0 ? (SystemCoreClock / TIM2_ONESHOT_HZ) : 1);
-    tim2.setOverflow(250, MICROSEC_FORMAT);
-    tim2.setMode(1, TIMER_OUTPUT_COMPARE_PWM1, MOTOR1_PIN);
-    tim2.setMode(2, TIMER_OUTPUT_COMPARE_PWM1, MOTOR2_PIN);
-    tim2.setMode(3, TIMER_OUTPUT_COMPARE_PWM1, MOTOR3_PIN);
-    tim2.setMode(4, TIMER_OUTPUT_COMPARE_PWM1, MOTOR4_PIN);
-    tim2.setCaptureCompare(1, 125, MICROSEC_FORMAT);
-    tim2.setCaptureCompare(2, 125, MICROSEC_FORMAT);
-    tim2.setCaptureCompare(3, 125, MICROSEC_FORMAT);
-    tim2.setCaptureCompare(4, 125, MICROSEC_FORMAT);
-    tim2.resume();
-  } else {
-    tim2.pause();
-    tim2.setPrescaleFactor((SystemCoreClock / TIM2_TICK_HZ) > 0 ? (SystemCoreClock / TIM2_TICK_HZ) : 1);
-    tim2.setOverflow(20000, MICROSEC_FORMAT);
-    tim2.setMode(1, TIMER_OUTPUT_COMPARE_PWM1, MOTOR1_PIN);
-    tim2.setMode(2, TIMER_OUTPUT_COMPARE_PWM1, MOTOR2_PIN);
-    tim2.setMode(3, TIMER_OUTPUT_COMPARE_PWM1, MOTOR3_PIN);
-    tim2.setMode(4, TIMER_OUTPUT_COMPARE_PWM1, MOTOR4_PIN);
-    tim2.setCaptureCompare(1, 1000, MICROSEC_FORMAT);
-    tim2.setCaptureCompare(2, 1000, MICROSEC_FORMAT);
-    tim2.setCaptureCompare(3, 1000, MICROSEC_FORMAT);
-    tim2.setCaptureCompare(4, 1000, MICROSEC_FORMAT);
-    tim2.resume();
+void madgwickUpdate(float gx, float gy, float gz, float ax, float ay, float az, float dt) {
+  if (isnan(gx) || isnan(gy) || isnan(gz) || isnan(ax) || isnan(ay) || isnan(az) || isnan(dt) || dt <= 0.0f) {
+    setFcErrorRam(FC_ERR_NAN_INF_MATH); return;
   }
+  float q0 = orientation.q0, q1 = orientation.q1, q2 = orientation.q2, q3 = orientation.q3;
+  float qDot1 = 0.5f * (-q1 * gx - q2 * gy - q3 * gz);
+  float qDot2 = 0.5f * (q0 * gx + q2 * gz - q3 * gy);
+  float qDot3 = 0.5f * (q0 * gy - q1 * gz + q3 * gx);
+  float qDot4 = 0.5f * (q0 * gz + q1 * gy - q2 * gx);
+
+  float norm = ax * ax + ay * ay + az * az;
+  if (norm > 1e-6f && !isnan(norm) && !isinf(norm)) {
+    float inv_norm = 1.0f / sqrtf(norm);
+    ax *= inv_norm; ay *= inv_norm; az *= inv_norm;
+
+    float _2q0 = 2.0f * q0, _2q1 = 2.0f * q1, _2q2 = 2.0f * q2, _2q3 = 2.0f * q3;
+    float _4q0 = 4.0f * q0, _4q1 = 4.0f * q1, _4q2 = 4.0f * q2;
+    float _8q1 = 8.0f * q1, _8q2 = 8.0f * q2;
+    float q0q0 = q0 * q0, q1q1 = q1 * q1, q2q2 = q2 * q2, q3q3 = q3 * q3;
+
+    float s0 = _4q0 * q2q2 + _2q2 * ax + _4q0 * q1q1 - _2q1 * ay;
+    float s1 = _4q1 * q3q3 - _2q3 * ax + 4.0f * q0q0 * q1 - _2q0 * ay - _4q1 + _8q1 * q1q1 + _8q1 * q2q2 + _4q1 * az;
+    float s2 = 4.0f * q0q0 * q2 + _2q0 * ax + _4q2 * q3q3 - _2q3 * ay - _4q2 + _8q2 * q1q1 + _8q2 * q2q2 + _4q2 * az;
+    float s3 = 4.0f * q1q1 * q3 + _2q1 * ax + 4.0f * q2q2 * q3 - _2q2 * ay;
+
+    float s_norm = s0 * s0 + s1 * s1 + s2 * s2 + s3 * s3;
+    if (s_norm > 1e-12f && !isnan(s_norm) && !isinf(s_norm)) {
+      float inv_s = 1.0f / sqrtf(s_norm);
+      s0 *= inv_s; s1 *= inv_s; s2 *= inv_s; s3 *= inv_s;
+
+      float beta = currentConfig.flt_amb_en ?
+                   constrain(currentConfig.flt_amb / (1.0f + vibration_index * 0.2f), currentConfig.flt_amb_min, currentConfig.flt_amb) :
+                   currentConfig.flt_amb;
+      qDot1 -= beta * s0; qDot2 -= beta * s1; qDot3 -= beta * s2; qDot4 -= beta * s3;
+    }
+  }
+
+  q0 += qDot1 * dt; q1 += qDot2 * dt; q2 += qDot3 * dt; q3 += qDot4 * dt;
+  if (isnan(q0) || isnan(q1) || isnan(q2) || isnan(q3) || isinf(q0) || isinf(q1) || isinf(q2) || isinf(q3)) {
+    setFcErrorRam(FC_ERR_NAN_INF_MATH);
+    orientation.q0 = 1.0f; orientation.q1 = 0.0f; orientation.q2 = 0.0f; orientation.q3 = 0.0f;
+    return;
+  }
+  orientation.q0 = q0; orientation.q1 = q1; orientation.q2 = q2; orientation.q3 = q3;
+  orientation.normalize();
+}
+
+float calculateSuperExpoRate(float in, float r, float s, float e) {
+  float x = constrain(fabsf(in), 0.0f, 1.0f);
+  float exp_part = x * ((1.0f - e) + e * (x * x * x));
+  float denom = fmaxf(1.0f - x * s, 0.1f);
+  float out = (r * exp_part) / denom;
+  return (in >= 0.0f) ? out : -out;
+}
+
+void setupHardwareTimers() {
+  uint32_t prescaler = (currentConfig.esc_prot == 1) ? ((SystemCoreClock / TIM2_ONESHOT_HZ) - 1) : ((SystemCoreClock / TIM2_TICK_HZ) - 1);
+  tim2.setPrescaler(prescaler);
+  if (currentConfig.esc_prot == 1) {
+    tim2.setOverflow(3000, MICROSEC_FORMAT);
+    tim2.setCaptureCompare(1, 125, MICROSEC_COMPARE_FORMAT);
+    tim2.setCaptureCompare(2, 125, MICROSEC_COMPARE_FORMAT);
+    tim2.setCaptureCompare(3, 125, MICROSEC_COMPARE_FORMAT);
+    tim2.setCaptureCompare(4, 125, MICROSEC_COMPARE_FORMAT);
+  } else {
+    tim2.setOverflow(2500, MICROSEC_FORMAT);
+    tim2.setCaptureCompare(1, 1000, MICROSEC_COMPARE_FORMAT);
+    tim2.setCaptureCompare(2, 1000, MICROSEC_COMPARE_FORMAT);
+    tim2.setCaptureCompare(3, 1000, MICROSEC_COMPARE_FORMAT);
+    tim2.setCaptureCompare(4, 1000, MICROSEC_COMPARE_FORMAT);
+  }
+  tim2.setMode(1, TIMER_OUTPUT_COMPARE_PWM1, MOTOR1_PIN);
+  tim2.setMode(2, TIMER_OUTPUT_COMPARE_PWM1, MOTOR2_PIN);
+  tim2.setMode(3, TIMER_OUTPUT_COMPARE_PWM1, MOTOR3_PIN);
+  tim2.setMode(4, TIMER_OUTPUT_COMPARE_PWM1, MOTOR4_PIN);
+  tim2.resume();
 }
 
 void resetMotorSlewState() {
-  prev_m1_out = 0.0f;
-  prev_m2_out = 0.0f;
-  prev_m3_out = 0.0f;
-  prev_m4_out = 0.0f;
-}
-
-static inline float applyMotorStepLimit(float target, float &prev_out, float max_delta) {
-  if (isnan(target) || isinf(target)) target = OUTPUT_MIN;
-  target = constrain(target, OUTPUT_MIN, OUTPUT_MAX);
-  if (target <= 0.001f) {
-    prev_out = 0.0f;
-    return 0.0f;
-  }
-  float delta = constrain(target - prev_out, -max_delta, max_delta);
-  prev_out = constrain(prev_out + delta, OUTPUT_MIN, OUTPUT_MAX);
-  return prev_out;
-}
-
-void setMotorsPower(float m1, float m2, float m3, float m4, float max_cap) {
-  float cap = constrain(max_cap, OUTPUT_MIN, OUTPUT_MAX);
-  bool inactive_cut = (!is_armed && !CliAutoCal::isFlightActive() && bench_test_mode == BENCH_TEST_NONE) || (cap <= 0.001f);
-  if (inactive_cut) {
-    m1 = m2 = m3 = m4 = 0.0f;
-    resetMotorSlewState();
-  } else {
-    float max_delta = getEffectiveEscDeltaLimit();
-    m1 = constrain(applyMotorStepLimit(m1, prev_m1_out, max_delta), 0.0f, cap);
-    m2 = constrain(applyMotorStepLimit(m2, prev_m2_out, max_delta), 0.0f, cap);
-    m3 = constrain(applyMotorStepLimit(m3, prev_m3_out, max_delta), 0.0f, cap);
-    m4 = constrain(applyMotorStepLimit(m4, prev_m4_out, max_delta), 0.0f, cap);
-  }
-
-  float vals[4] = {m1, m2, m3, m4};
-  for (uint8_t i = 0; i < 4; i++) {
-    uint32_t pulse_us = 1000;
-    if (currentConfig.esc_prot == 1) {
-      pulse_us = (uint32_t)constrain(lroundf(125.0f + ((vals[i] / OUTPUT_MAX) * 125.0f)), 125L, 250L);
-    } else {
-      pulse_us = (uint32_t)constrain(lroundf(1000.0f + ((vals[i] / OUTPUT_MAX) * 1000.0f)), 1000L, 2000L);
-    }
-    tim2.setCaptureCompare(i + 1, pulse_us, MICROSEC_FORMAT);
-  }
+  prev_m1_out = 0.0f; prev_m2_out = 0.0f; prev_m3_out = 0.0f; prev_m4_out = 0.0f;
 }
 
 void stopBenchTest() {
-  if (bench_test_mode != BENCH_TEST_NONE) {
-    bench_test_mode = BENCH_TEST_NONE;
-    resetMotorSlewState();
-    setMotorsPower(OUTPUT_MIN, OUTPUT_MIN, OUTPUT_MIN, OUTPUT_MIN);
-  }
+  bench_test_mode = BENCH_TEST_NONE;
+  resetMotorSlewState();
+  setMotorsPower(OUTPUT_MIN, OUTPUT_MIN, OUTPUT_MIN, OUTPUT_MIN);
 }
 
 void stepBenchTestNonBlocking(uint32_t now_ms, float gx_rad, float gy_rad, float gz_rad,
@@ -3660,300 +3660,213 @@ void stepBenchTestNonBlocking(uint32_t now_ms, float gx_rad, float gy_rad, float
     return;
   }
   if (bench_test_mode == BENCH_TEST_MOTORS) {
-    m1 = m2 = m3 = m4 = BENCH_TEST_THROTTLE;
-  } else if (bench_test_mode == BENCH_TEST_PID) {
+    float thr = BENCH_TEST_THROTTLE;
+    m1 = m2 = m3 = m4 = thr;
+    return;
+  }
+  if (bench_test_mode == BENCH_TEST_PID) {
+    float thr = 120.0f;
     float r_cmd = rollRatePID.update(0.0f - gx_rad, gx_rad, DT, false);
     float p_cmd = pitchRatePID.update(0.0f - gy_rad, gy_rad, DT, false);
     float y_cmd = yawRatePID.update(0.0f - gz_rad, gz_rad, DT, false);
-    m1 = constrain(BENCH_TEST_THROTTLE + p_cmd + r_cmd - y_cmd, OUTPUT_MIN, 250.0f);
-    m2 = constrain(BENCH_TEST_THROTTLE + p_cmd - r_cmd + y_cmd, OUTPUT_MIN, 250.0f);
-    m3 = constrain(BENCH_TEST_THROTTLE - p_cmd - r_cmd - y_cmd, OUTPUT_MIN, 250.0f);
-    m4 = constrain(BENCH_TEST_THROTTLE - p_cmd + r_cmd + y_cmd, OUTPUT_MIN, 250.0f);
+    m1 = constrain(thr + p_cmd + r_cmd - y_cmd, OUTPUT_MIN, OUTPUT_MAX);
+    m2 = constrain(thr + p_cmd - r_cmd + y_cmd, OUTPUT_MIN, OUTPUT_MAX);
+    m3 = constrain(thr - p_cmd - r_cmd - y_cmd, OUTPUT_MIN, OUTPUT_MAX);
+    m4 = constrain(thr - p_cmd + r_cmd + y_cmd, OUTPUT_MIN, OUTPUT_MAX);
   }
 }
 
-float calculateSuperExpoRate(float in, float r, float s, float e) {
-  if (isnan(in) || isinf(in)) { setFcErrorRam(FC_ERR_NAN_INF_MATH); return 0.0f; }
-  float norm = constrain((in - STICK_CENTER) / STICK_CENTER, -1.0f, 1.0f);
-  if (fabsf(norm) < (currentConfig.rc_deadband / STICK_CENTER)) return 0.0f;
-  float expo_curve = norm * ((1.0f - e) + e * (norm * norm * norm));
-  float super_factor = 1.0f / fmaxf(0.1f, (1.0f - (fabsf(norm) * s)));
-  float out = expo_curve * r * super_factor * MAX_RATE_DPS_PER_UNIT * DEG_TO_RAD;
-  return (isnan(out) || isinf(out)) ? 0.0f : out;
-}
+void setMotorsPower(float m1, float m2, float m3, float m4, float max_cap) {
+  float cap = constrain(max_cap, OUTPUT_MIN, OUTPUT_MAX);
+  float raw[4] = {
+    constrain(m1, OUTPUT_MIN, cap),
+    constrain(m2, OUTPUT_MIN, cap),
+    constrain(m3, OUTPUT_MIN, cap),
+    constrain(m4, OUTPUT_MIN, cap)
+  };
+  float* prev[4] = { &prev_m1_out, &prev_m2_out, &prev_m3_out, &prev_m4_out };
+  float max_delta = getEffectiveEscDeltaLimit();
 
-static void updateMadgwickQuaternion(float gx, float gy, float gz, float ax, float ay, float az, float dt) {
-  float q0 = orientation.q0, q1 = orientation.q1, q2 = orientation.q2, q3 = orientation.q3;
-  float acc_norm = sqrtf(ax * ax + ay * ay + az * az);
-  float beta = 0.08f;
-  if (acc_norm > 0.01f && !isnan(acc_norm) && !isinf(acc_norm)) {
-    float inv_a = 1.0f / acc_norm;
-    ax *= inv_a; ay *= inv_a; az *= inv_a;
-    float _2q0 = 2.0f * q0, _2q1 = 2.0f * q1, _2q2 = 2.0f * q2, _2q3 = 2.0f * q3;
-    float _4q0 = 4.0f * q0, _4q1 = 4.0f * q1, _4q2 = 4.0f * q2;
-    float _8q1 = 8.0f * q1, _8q2 = 8.0f * q2;
-    float q0q0 = q0 * q0, q1q1 = q1 * q1, q2q2 = q2 * q2, q3q3 = q3 * q3;
-
-    float s0 = _4q0 * q2q2 + _2q2 * ax + _4q0 * q1q1 - _2q1 * ay;
-    float s1 = _4q1 * q3q3 - _2q3 * ax + 4.0f * q0q0 * q1 - _2q0 * ay - _4q1 + _8q1 * q1q1 + _8q1 * q2q2 + _4q1 * az;
-    float s2 = 4.0f * q0q0 * q2 + _2q0 * ax + _4q2 * q3q3 - _2q3 * ay - _4q2 + _8q2 * q1q1 + _8q2 * q2q2 + _4q2 * az;
-    float s3 = 4.0f * q1q1 * q3 - _2q1 * ax + 4.0f * q2q2 * q3 - _2q2 * ay;
-    float s_norm = sqrtf(s0 * s0 + s1 * s1 + s2 * s2 + s3 * s3);
-    if (s_norm > 1e-6f) {
-      s0 /= s_norm; s1 /= s_norm; s2 /= s_norm; s3 /= s_norm;
-      float qDot0 = 0.5f * (-q1 * gx - q2 * gy - q3 * gz) - beta * s0;
-      float qDot1 = 0.5f * (q0 * gx + q2 * gz - q3 * gy) - beta * s1;
-      float qDot2 = 0.5f * (q0 * gy - q1 * gz + q3 * gx) - beta * s2;
-      float qDot3 = 0.5f * (q0 * gz + q1 * gy - q2 * gx) - beta * s3;
-      q0 += qDot0 * dt; q1 += qDot1 * dt; q2 += qDot2 * dt; q3 += qDot3 * dt;
-      orientation.q0 = q0; orientation.q1 = q1; orientation.q2 = q2; orientation.q3 = q3;
-      orientation.normalize();
-      return;
+  for (uint8_t i = 0; i < 4; i++) {
+    if (!is_armed && !CliAutoCal::isFlightActive() && bench_test_mode == BENCH_TEST_NONE) {
+      raw[i] = OUTPUT_MIN;
+      *prev[i] = OUTPUT_MIN;
+    } else if (raw[i] > OUTPUT_MIN) {
+      float delta = raw[i] - *prev[i];
+      if (delta > max_delta) raw[i] = *prev[i] + max_delta;
+      else if (delta < -max_delta) raw[i] = *prev[i] - max_delta;
+      raw[i] = constrain(raw[i], OUTPUT_MIN, cap);
+      *prev[i] = raw[i];
+    } else {
+      *prev[i] = OUTPUT_MIN;
     }
+    uint32_t pulse_us = (currentConfig.esc_prot == 1)
+                          ? (uint32_t)(125.0f + (raw[i] / OUTPUT_MAX) * 125.0f)
+                          : (uint32_t)(1000.0f + (raw[i] / OUTPUT_MAX) * 1000.0f);
+    tim2.setCaptureCompare(i + 1, pulse_us, MICROSEC_COMPARE_FORMAT);
   }
-  orientation.q0 += 0.5f * (-q1 * gx - q2 * gy - q3 * gz) * dt;
-  orientation.q1 += 0.5f * (q0 * gx + q2 * gz - q3 * gy) * dt;
-  orientation.q2 += 0.5f * (q0 * gy - q1 * gz + q3 * gx) * dt;
-  orientation.q3 += 0.5f * (q0 * gz + q1 * gy - q2 * gx) * dt;
-  orientation.normalize();
 }
 
 void flightControlTask() {
+  uint32_t loop_start_us = micros();
   uint32_t now_ms = millis();
-  if (!SensorDriver::readMPU6050(mpu_dma_buffer)) {
-    err_imu_fail = true;
-    setFcErrorRam(FC_ERR_IMU_FAIL);
-    is_armed = false;
-    setMotorsPower(OUTPUT_MIN, OUTPUT_MIN, OUTPUT_MIN, OUTPUT_MIN);
-    return;
+
+  CliAutoCal::pollButton(now_ms);
+  stepMagCalibrationNonBlocking(now_ms);
+  stepMonitorStreamNonBlocking(now_ms);
+  serviceError202Event(now_ms);
+  handleMotorArmStateAndEepromError();
+
+  if (currentConfig.rtx_en) {
+    pollTelemetryTxState();
+    readRx();
+    stepChannelScanNonBlocking();
+  }
+  if (currentConfig.vtx_en) vtxStepNonBlocking(now_ms);
+  updateAuxSensorsNonBlocking(now_ms);
+
+  if (currentConfig.fs_rtx_en && ((now_ms - last_rc_packet_ms) > FAILSAFE_TIMEOUT_MS)) {
+    is_failsafe = true; err_rc_loss = true; setFcErrorRam(FC_ERR_RC_LOSS);
+  } else {
+    is_failsafe = false; err_rc_loss = false;
   }
 
-  float raw_ax = (float)((int16_t)(mpu_dma_buffer[0] << 8 | mpu_dma_buffer[1])) / SensorDriver::activeSensors.acc_scale;
-  float raw_ay = (float)((int16_t)(mpu_dma_buffer[2] << 8 | mpu_dma_buffer[3])) / SensorDriver::activeSensors.acc_scale;
-  float raw_az = (float)((int16_t)(mpu_dma_buffer[4] << 8 | mpu_dma_buffer[5])) / SensorDriver::activeSensors.acc_scale;
-  current_chip_temp = SensorDriver::extractTempFromImuBuf(mpu_dma_buffer);
-  float raw_gx = (float)((int16_t)(mpu_dma_buffer[8] << 8 | mpu_dma_buffer[9])) / SensorDriver::activeSensors.gyro_scale;
-  float raw_gy = (float)((int16_t)(mpu_dma_buffer[10] << 8 | mpu_dma_buffer[11])) / SensorDriver::activeSensors.gyro_scale;
-  float raw_gz = (float)((int16_t)(mpu_dma_buffer[12] << 8 | mpu_dma_buffer[13])) / SensorDriver::activeSensors.gyro_scale;
+  float ax_g = 0.0f, ay_g = 0.0f, az_g = 1.0f;
+  float gx_dps = 0.0f, gy_dps = 0.0f, gz_dps = 0.0f;
 
-  SensorDriver::rotateXYByYawAlign(raw_ax, raw_ay, currentConfig.imu_align);
-  SensorDriver::rotateXYByYawAlign(raw_gx, raw_gy, currentConfig.imu_align);
+  if (SensorDriver::readMPU6050(mpu_dma_buffer)) {
+    err_imu_fail = false;
+    current_chip_temp = SensorDriver::extractTempFromImuBuf(mpu_dma_buffer);
+    float raw_ax = (float)((int16_t)(mpu_dma_buffer[0] << 8 | mpu_dma_buffer[1])) / SensorDriver::activeSensors.acc_scale;
+    float raw_ay = (float)((int16_t)(mpu_dma_buffer[2] << 8 | mpu_dma_buffer[3])) / SensorDriver::activeSensors.acc_scale;
+    float raw_az = (float)((int16_t)(mpu_dma_buffer[4] << 8 | mpu_dma_buffer[5])) / SensorDriver::activeSensors.acc_scale;
+    float raw_gx = (float)((int16_t)(mpu_dma_buffer[8] << 8 | mpu_dma_buffer[9])) / SensorDriver::activeSensors.gyro_scale;
+    float raw_gy = (float)((int16_t)(mpu_dma_buffer[10] << 8 | mpu_dma_buffer[11])) / SensorDriver::activeSensors.gyro_scale;
+    float raw_gz = (float)((int16_t)(mpu_dma_buffer[12] << 8 | mpu_dma_buffer[13])) / SensorDriver::activeSensors.gyro_scale;
 
-  float delta_t_c = current_chip_temp - currentConfig.base_temperature;
-  float cal_gx_dps = raw_gx - (currentConfig.gyro_bias_x + currentConfig.temp_coeff_x * delta_t_c);
-  float cal_gy_dps = raw_gy - (currentConfig.gyro_bias_y + currentConfig.temp_coeff_y * delta_t_c);
-  float cal_gz_dps = raw_gz - (currentConfig.gyro_bias_z + currentConfig.temp_coeff_z * delta_t_c);
-  float cal_ax_g = raw_ax - currentConfig.acc_bias_x;
-  float cal_ay_g = raw_ay - currentConfig.acc_bias_y;
-  float cal_az_g = raw_az - currentConfig.acc_bias_z;
+    SensorDriver::rotateXYByYawAlign(raw_ax, raw_ay, currentConfig.imu_align);
+    SensorDriver::rotateXYByYawAlign(raw_gx, raw_gy, currentConfig.imu_align);
 
-  last_cal_gx_dps = cal_gx_dps; last_cal_gy_dps = cal_gy_dps; last_cal_gz_dps = cal_gz_dps;
-  last_cal_ax_g = cal_ax_g; last_cal_ay_g = cal_ay_g; last_cal_az_g = cal_az_g;
+    float dT = current_chip_temp - currentConfig.base_temperature;
+    ax_g = raw_ax - currentConfig.acc_bias_x;
+    ay_g = raw_ay - currentConfig.acc_bias_y;
+    az_g = raw_az - currentConfig.acc_bias_z;
+    gx_dps = raw_gx - (currentConfig.gyro_bias_x + currentConfig.temp_coeff_x * dT);
+    gy_dps = raw_gy - (currentConfig.gyro_bias_y + currentConfig.temp_coeff_y * dT);
+    gz_dps = raw_gz - (currentConfig.gyro_bias_z + currentConfig.temp_coeff_z * dT);
 
-  float hp_x = cal_gx_dps - lpf_xy_hp_x.update(cal_gx_dps);
-  float hp_y = cal_gy_dps - lpf_xy_hp_y.update(cal_gy_dps);
-  vibration_index = sqrtf(hp_x * hp_x + hp_y * hp_y);
+    if (currentConfig.flt_lpf_en) {
+      ax_g = lpf_ax.update(ax_g); ay_g = lpf_ay.update(ay_g); az_g = lpf_az.update(az_g);
+      gx_dps = lpf_gx.update(gx_dps); gy_dps = lpf_gy.update(gy_dps); gz_dps = lpf_gz.update(gz_dps);
+    }
+    if (currentConfig.flt_not_en) {
+      gx_dps = notch_gx.update(gx_dps); gy_dps = notch_gy.update(gy_dps); gz_dps = notch_gz.update(gz_dps);
+    }
 
-  if (currentConfig.flt_amb_en) {
-    float dyn_alpha = constrain(currentConfig.flt_amb / (1.0f + (vibration_index * 0.08f)), currentConfig.flt_amb_min, currentConfig.flt_amb);
-    lpf_gx.alpha = dyn_alpha; lpf_gy.alpha = dyn_alpha; lpf_gz.alpha = dyn_alpha;
+    last_cal_gx_dps = gx_dps; last_cal_gy_dps = gy_dps; last_cal_gz_dps = gz_dps;
+    last_cal_ax_g = ax_g; last_cal_ay_g = ay_g; last_cal_az_g = az_g;
+
+    float hp_x = ax_g - lpf_xy_hp_x.update(ax_g);
+    float hp_y = ay_g - lpf_xy_hp_y.update(ay_g);
+    vibration_index = sqrtf(hp_x * hp_x + hp_y * hp_y) * 100.0f;
+
+    madgwickUpdate(gx_dps * FC_DEG_TO_RAD, gy_dps * FC_DEG_TO_RAD, gz_dps * FC_DEG_TO_RAD, ax_g, ay_g, az_g, DT);
+
+    float q0 = orientation.q0, q1 = orientation.q1, q2 = orientation.q2, q3 = orientation.q3;
+    float r_deg = atan2f(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2)) * FC_RAD_TO_DEG;
+    float p_deg = asinf(constrain(2.0f * (q0 * q2 - q3 * q1), -1.0f, 1.0f)) * FC_RAD_TO_DEG;
+    CliAutoCal::onAttitudeAndMotion(ax_g, ay_g, az_g, r_deg, p_deg, gx_dps, gy_dps);
+  } else {
+    err_imu_fail = true; setFcErrorRam(FC_ERR_IMU_FAIL);
+    if (is_armed) { is_armed = false; setMotorsPower(OUTPUT_MIN, OUTPUT_MIN, OUTPUT_MIN, OUTPUT_MIN); }
   }
 
-  float gx_f = currentConfig.flt_lpf_en ? lpf_gx.update(cal_gx_dps) : cal_gx_dps;
-  float gy_f = currentConfig.flt_lpf_en ? lpf_gy.update(cal_gy_dps) : cal_gy_dps;
-  float gz_f = currentConfig.flt_lpf_en ? lpf_gz.update(cal_gz_dps) : cal_gz_dps;
-  float ax_f = currentConfig.flt_lpf_en ? lpf_ax.update(cal_ax_g) : cal_ax_g;
-  float ay_f = currentConfig.flt_lpf_en ? lpf_ay.update(cal_ay_g) : cal_ay_g;
-  float az_f = currentConfig.flt_lpf_en ? lpf_az.update(cal_az_g) : cal_az_g;
-
-  if (currentConfig.flt_not_en) {
-    gx_f = notch_gx.update(gx_f);
-    gy_f = notch_gy.update(gy_f);
-    gz_f = notch_gz.update(gz_f);
-  }
-
-  float gx_rad = gx_f * DEG_TO_RAD;
-  float gy_rad = gy_f * DEG_TO_RAD;
-  float gz_rad = gz_f * DEG_TO_RAD;
-
-  updateMadgwickQuaternion(gx_rad, gy_rad, gz_rad, ax_f, ay_f, az_f, DT);
-
+  float gx_rad = gx_dps * FC_DEG_TO_RAD, gy_rad = gy_dps * FC_DEG_TO_RAD, gz_rad = gz_dps * FC_DEG_TO_RAD;
   float q0 = orientation.q0, q1 = orientation.q1, q2 = orientation.q2, q3 = orientation.q3;
-  float roll_deg  = atan2f(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2)) * RAD_TO_DEG;
-  float pitch_deg = asinf(constrain(2.0f * (q0 * q2 - q3 * q1), -1.0f, 1.0f)) * RAD_TO_DEG;
+  float roll_deg = atan2f(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2)) * FC_RAD_TO_DEG;
+  float pitch_deg = asinf(constrain(2.0f * (q0 * q2 - q3 * q1), -1.0f, 1.0f)) * FC_RAD_TO_DEG;
 
-  CliAutoCal::onAttitudeAndMotion(cal_ax_g, cal_ay_g, cal_az_g, roll_deg, pitch_deg, cal_gx_dps, cal_gy_dps);
+  float m1_out = OUTPUT_MIN, m2_out = OUTPUT_MIN, m3_out = OUTPUT_MIN, m4_out = OUTPUT_MIN;
+  float motor_cap = OUTPUT_MAX;
 
-  if (currentConfig.fs_rtx_en && is_armed && ((now_ms - last_rc_packet_ms) > FAILSAFE_TIMEOUT_MS)) {
-    is_failsafe = true;
-    err_rc_loss = true;
-    setFcErrorRam(FC_ERR_RC_LOSS);
-  } else if ((now_ms - last_rc_packet_ms) <= FAILSAFE_TIMEOUT_MS) {
-    is_failsafe = false;
-    err_rc_loss = false;
-  }
-
-  float m1 = OUTPUT_MIN, m2 = OUTPUT_MIN, m3 = OUTPUT_MIN, m4 = OUTPUT_MIN;
-  if (CliAutoCal::stepFlight(now_ms, cal_gx_dps, cal_gy_dps, cal_gz_dps, gx_rad, gy_rad, gz_rad, roll_deg, pitch_deg, m1, m2, m3, m4)) {
-    setMotorsPower(m1, m2, m3, m4);
-    return;
-  }
-
-  if (bench_test_mode != BENCH_TEST_NONE) {
-    stepBenchTestNonBlocking(now_ms, gx_rad, gy_rad, gz_rad, m1, m2, m3, m4);
-    setMotorsPower(m1, m2, m3, m4, BENCH_TEST_THROTTLE);
-    return;
-  }
-
-  if (!is_armed) {
-    arm_ramp_factor = 0.0f;
-    rollRatePID.reset(); pitchRatePID.reset(); yawRatePID.reset(); vzPID.reset();
-    setMotorsPower(OUTPUT_MIN, OUTPUT_MIN, OUTPUT_MIN, OUTPUT_MIN);
-    return;
-  }
-
-  if (arm_ramp_factor < 1.0f) {
-    arm_ramp_factor = fminf(1.0f, arm_ramp_factor + (DT / 0.25f));
-  }
-
-  float sag_factor = getBatteryCompensationFactor();
-  float target_roll_rate  = calculateSuperExpoRate(smooth_roll, currentConfig.rc_rate, currentConfig.rc_super_expo, currentConfig.rc_stick_expo);
-  float target_pitch_rate = calculateSuperExpoRate(smooth_pitch, currentConfig.rc_rate, currentConfig.rc_super_expo, currentConfig.rc_stick_expo);
-  float target_yaw_rate   = calculateSuperExpoRate(smooth_yaw, currentConfig.rc_yaw_rate, currentConfig.rc_yaw_super_expo, currentConfig.rc_yaw_expo);
-
-  if (currentConfig.fm_mode == 1 || currentConfig.fm_mode == 2) {
+  if (CliAutoCal::stepFlight(now_ms, gx_dps, gy_dps, gz_dps, gx_rad, gy_rad, gz_rad, roll_deg, pitch_deg, m1_out, m2_out, m3_out, m4_out)) {
+    setMotorsPower(m1_out, m2_out, m3_out, m4_out, motor_cap);
+  } else if (bench_test_mode != BENCH_TEST_NONE) {
+    stepBenchTestNonBlocking(now_ms, gx_rad, gy_rad, gz_rad, m1_out, m2_out, m3_out, m4_out);
+    setMotorsPower(m1_out, m2_out, m3_out, m4_out, motor_cap);
+  } else if (is_armed) {
+    if (arm_ramp_factor < 1.0f) { arm_ramp_factor += DT / 0.3f; if (arm_ramp_factor > 1.0f) arm_ramp_factor = 1.0f; }
     float r_norm = constrain((smooth_roll - STICK_CENTER) / STICK_CENTER, -1.0f, 1.0f);
     float p_norm = constrain((smooth_pitch - STICK_CENTER) / STICK_CENTER, -1.0f, 1.0f);
-    float angle_weight = 1.0f;
-    if (currentConfig.fm_mode == 2) {
-      float stick_mag = fmaxf(fabsf(r_norm), fabsf(p_norm));
-      float trans = constrain(currentConfig.rc_horizon_transition, 0.1f, 0.99f);
-      if (stick_mag >= trans) angle_weight = 0.0f;
-      else angle_weight = 1.0f - (stick_mag / trans);
+    float y_norm = constrain((smooth_yaw - STICK_CENTER) / STICK_CENTER, -1.0f, 1.0f);
+    if (fabsf(r_norm) * STICK_CENTER < currentConfig.rc_deadband) r_norm = 0.0f;
+    if (fabsf(p_norm) * STICK_CENTER < currentConfig.rc_deadband) p_norm = 0.0f;
+    if (fabsf(y_norm) * STICK_CENTER < currentConfig.rc_deadband) y_norm = 0.0f;
+
+    float target_roll_rate_rad = calculateSuperExpoRate(r_norm, currentConfig.rc_rate, currentConfig.rc_super_expo, currentConfig.rc_stick_expo) * MAX_RATE_DPS_PER_UNIT * FC_DEG_TO_RAD;
+    float target_pitch_rate_rad = calculateSuperExpoRate(p_norm, currentConfig.rc_rate, currentConfig.rc_super_expo, currentConfig.rc_stick_expo) * MAX_RATE_DPS_PER_UNIT * FC_DEG_TO_RAD;
+    float target_yaw_rate_rad = calculateSuperExpoRate(y_norm, currentConfig.rc_yaw_rate, currentConfig.rc_yaw_super_expo, currentConfig.rc_yaw_expo) * MAX_RATE_DPS_PER_UNIT * FC_DEG_TO_RAD;
+
+    if (currentConfig.fm_mode == 1) {
+      target_roll_rate_rad = constrain((r_norm * currentConfig.fm_roll_max - roll_deg) * 2.5f * FC_DEG_TO_RAD, -3.5f, 3.5f);
+      target_pitch_rate_rad = constrain((p_norm * currentConfig.fm_pitch_max - pitch_deg) * 2.5f * FC_DEG_TO_RAD, -3.5f, 3.5f);
     }
-    float desired_roll_deg  = r_norm * currentConfig.fm_roll_max;
-    float desired_pitch_deg = p_norm * currentConfig.fm_pitch_max;
-    float angle_roll_rate  = constrain((desired_roll_deg - roll_deg) * 3.0f * DEG_TO_RAD, -4.0f, 4.0f);
-    float angle_pitch_rate = constrain((desired_pitch_deg - pitch_deg) * 3.0f * DEG_TO_RAD, -4.0f, 4.0f);
-    target_roll_rate  = angle_weight * angle_roll_rate + (1.0f - angle_weight) * target_roll_rate;
-    target_pitch_rate = angle_weight * angle_pitch_rate + (1.0f - angle_weight) * target_pitch_rate;
-  }
 
-  float r_out = rollRatePID.update(target_roll_rate - gx_rad, gx_rad, DT, false) * sag_factor;
-  float p_out = pitchRatePID.update(target_pitch_rate - gy_rad, gy_rad, DT, false) * sag_factor;
-  float y_out = yawRatePID.update(target_yaw_rate - gz_rad, gz_rad, DT, false) * sag_factor;
+    float base_thr = is_failsafe ? (base_hover_throttle * 0.85f) : constrain(smooth_throttle, OUTPUT_MIN, OUTPUT_MAX);
+    float sag_comp = getBatteryCompensationFactor();
+    float r_cmd = rollRatePID.update(target_roll_rate_rad - gx_rad, gx_rad, DT, false) * sag_comp;
+    float p_cmd = pitchRatePID.update(target_pitch_rate_rad - gy_rad, gy_rad, DT, false) * sag_comp;
+    float y_cmd = yawRatePID.update(target_yaw_rate_rad - gz_rad, gz_rad, DT, false) * sag_comp;
 
-  float base_thr = 0.0f;
-  if (is_failsafe) {
-    float des_vz = -fabsf(currentConfig.fs_vz_speed);
-    base_thr = constrain(base_hover_throttle + vzPID.update(des_vz - current_vz, current_vz, DT, false), 80.0f, 750.0f);
-  } else if (currentConfig.fm_mode == 3) {
-    float t_norm = constrain((smooth_throttle - STICK_CENTER) / STICK_CENTER, -1.0f, 1.0f);
-    float des_vz = t_norm * currentConfig.fm_vz_speed_max;
-    base_thr = constrain(base_hover_throttle + vzPID.update(des_vz - current_vz, current_vz, DT, false), 50.0f, 850.0f);
+    m1_out = constrain((base_thr + p_cmd + r_cmd - y_cmd) * arm_ramp_factor, OUTPUT_MIN, OUTPUT_MAX);
+    m2_out = constrain((base_thr + p_cmd - r_cmd + y_cmd) * arm_ramp_factor, OUTPUT_MIN, OUTPUT_MAX);
+    m3_out = constrain((base_thr - p_cmd - r_cmd - y_cmd) * arm_ramp_factor, OUTPUT_MIN, OUTPUT_MAX);
+    m4_out = constrain((base_thr - p_cmd + r_cmd + y_cmd) * arm_ramp_factor, OUTPUT_MIN, OUTPUT_MAX);
+    setMotorsPower(m1_out, m2_out, m3_out, m4_out, motor_cap);
   } else {
-    base_thr = constrain(smooth_throttle, OUTPUT_MIN, 900.0f);
+    arm_ramp_factor = 0.0f;
+    rollRatePID.reset(); pitchRatePID.reset(); yawRatePID.reset(); vzPID.reset();
+    setMotorsPower(OUTPUT_MIN, OUTPUT_MIN, OUTPUT_MIN, OUTPUT_MIN, motor_cap);
   }
 
-  base_thr *= arm_ramp_factor;
+  if (send_telemetry_pending && currentConfig.rtx_en && !rtx_tx_in_flight && !rtx_scan_active) {
+    startTelemetryNonBlocking();
+  }
 
-  m1 = constrain(base_thr + p_out + r_out - y_out, OUTPUT_MIN, OUTPUT_MAX);
-  m2 = constrain(base_thr + p_out - r_out + y_out, OUTPUT_MIN, OUTPUT_MAX);
-  m3 = constrain(base_thr - p_out - r_out - y_out, OUTPUT_MIN, OUTPUT_MAX);
-  m4 = constrain(base_thr - p_out + r_out + y_out, OUTPUT_MIN, OUTPUT_MAX);
-
-  setMotorsPower(m1, m2, m3, m4);
+  uint32_t elapsed_us = micros() - loop_start_us;
+  cpu_load_pct = constrain(((float)elapsed_us / (float)LOOP_INTERVAL_US) * 100.0f, 0.0f, 200.0f);
+  if (cpu_load_pct > cpu_max_load_pct) cpu_max_load_pct = cpu_load_pct;
+  if (elapsed_us > (LOOP_INTERVAL_US + LOOP_OVERRUN_MARGIN_US)) {
+    setFcErrorRam(FC_ERR_LOOP_OVERRUN);
+  }
 }
 
-// ==============================================================================
-// 12. ТОЧКИ ВХОДА ARDUINO (setup / loop)
-// ==============================================================================
 void setup() {
-  delay(POWER_ON_SETTLE_MS);
-
   Serial.begin(SERIAL_BAUD_RATE);
+  delay(POWER_ON_SETTLE_MS);
+  Wire.setSCL(PB6); Wire.setSDA(PB7); Wire.begin(); Wire.setClock(400000);
   analogReadResolution(12);
-  pinMode(BATTERY_PIN, INPUT_ANALOG);
-  pinMode(CURRENT_PIN, INPUT_ANALOG);
-
-  Wire.setSCL(PB6);
-  Wire.setSDA(PB7);
-  Wire.begin();
-  Wire.setClock(400000);
-
   loadSettings();
-  setupHardwareTimers();
-  setMotorsPower(OUTPUT_MIN, OUTPUT_MIN, OUTPUT_MIN, OUTPUT_MIN);
-
-  SensorDriver::autoDetectAll();
   applyFilterConfig();
-  updatePidTunings();
+  setupHardwareTimers();
+  CliAutoCal::init();
+  SensorDriver::autoDetectAll();
   vtxInit();
-
-  main_rtx_chan = constrain(currentConfig.rtx_pri_chan, 0, 99);
-  active_rtx_chan = main_rtx_chan;
-  is_on_backup = false;
-  rtx_init_hardware();
   if (currentConfig.rtx_en) {
+    rtx_init_hardware();
+    main_rtx_chan = constrain(currentConfig.rtx_pri_chan, 0, 99);
+    active_rtx_chan = main_rtx_chan;
     applyRtxConfiguration(false);
   }
-
-  CliAutoCal::init();
-  last_rc_packet_ms = millis();
 }
 
 void loop() {
   static uint32_t last_loop_us = 0;
-  if (last_loop_us == 0) {
-    last_loop_us = micros();
-  }
-
+  if (last_loop_us == 0) last_loop_us = micros();
+  parseCli();
   uint32_t now_us = micros();
-  if ((uint32_t)(now_us - last_loop_us) >= LOOP_INTERVAL_US) {
-    uint32_t exec_start_us = micros();
-    uint32_t jitter_us = (uint32_t)(exec_start_us - last_loop_us) - LOOP_INTERVAL_US;
-    last_loop_us += LOOP_INTERVAL_US;
-    if ((uint32_t)(micros() - last_loop_us) >= LOOP_INTERVAL_US) {
-      last_loop_us = micros();
-    }
-
-    handleMotorArmStateAndEepromError();
+  if ((now_us - last_loop_us) >= LOOP_INTERVAL_US) {
+    last_loop_us = now_us;
     flightControlTask();
-
-    uint32_t now_ms = millis();
-    updateAuxSensorsNonBlocking(now_ms);
-    CliAutoCal::pollButton(now_ms);
-    stepMagCalibrationNonBlocking(now_ms);
-    serviceError202Event(now_ms);
-
-    if (currentConfig.rtx_en) {
-      pollTelemetryTxState();
-      if (!rtx_tx_in_flight && !rtx_recovering) {
-        if (rtx_scan_active) {
-          stepChannelScanNonBlocking();
-        } else {
-          readRx();
-          if (!rtx_tx_in_flight && (send_telemetry_pending || hasQueuedRtxResponse())) {
-            startTelemetryNonBlocking();
-          }
-        }
-      }
-    }
-
-    if (currentConfig.vtx_en) {
-      vtxStepNonBlocking(now_ms);
-    }
-
-    parseCli();
-    stepMonitorStreamNonBlocking(now_ms);
-
-    uint32_t exec_elapsed_us = (uint32_t)(micros() - exec_start_us);
-    cpu_load_pct = ((float)exec_elapsed_us / (float)LOOP_INTERVAL_US) * 100.0f;
-    if (cpu_load_pct > cpu_max_load_pct) {
-      cpu_max_load_pct = cpu_load_pct;
-    }
-    if (jitter_us > LOOP_OVERRUN_MARGIN_US || exec_elapsed_us > (LOOP_INTERVAL_US - LOOP_OVERRUN_MARGIN_US)) {
-      setFcErrorRam(FC_ERR_LOOP_OVERRUN);
-    }
   }
 }
