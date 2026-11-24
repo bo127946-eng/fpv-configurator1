@@ -1,4 +1,4 @@
-name: Build STM32F103CBT6 (Arduino)
+name: Build STM32F103CBT6 (FlightController)
 
 on:
   push:
@@ -25,10 +25,10 @@ jobs:
           arduino-cli core update-index
           arduino-cli core install STMicroelectronics:stm32
 
-      - name: Compile for STM32F103CBT6 (128K Flash)
+      - name: Compile FlightController for STM32F103CB (128K Flash)
         run: |
           arduino-cli compile \
             --fqbn STMicroelectronics:stm32:GenF1:pnum=BLUEPILL_F103CB \
             --export-binaries \
             --warnings all \
-            .
+            FlightController
