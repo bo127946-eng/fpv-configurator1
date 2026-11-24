@@ -111,6 +111,21 @@ enum DelayedRtxRespType : uint8_t {
 };
 enum BenchTestMode : uint8_t { BENCH_TEST_NONE = 0, BENCH_TEST_MOTORS = 1, BENCH_TEST_PID = 2 };
 
+enum CliValType : uint8_t { CLI_U8 = 0, CLI_I8 = 1, CLI_U16 = 2, CLI_F32 = 3 };
+enum CliHook : uint8_t {
+  HOOK_NONE = 0, HOOK_DSP_PID, HOOK_RTX, HOOK_IMU, HOOK_BARO, HOOK_MAG, HOOK_LIDAR,
+  HOOK_VTX_EN, HOOK_VTX_PROT, HOOK_VTX_MHZ, HOOK_VTX_MW
+};
+
+struct CliParam {
+  const char* name;
+  void* ptr;
+  CliValType type;
+  CliHook hook;
+  int min_v;
+  int max_v;
+};
+
 struct DelayedRtxRespItem {
   DelayedRtxRespType type = RTX_RESP_NONE;
   uint16_t vtx_mhz = 0;
@@ -317,6 +332,11 @@ void stepMonitorStreamNonBlocking(uint32_t now_ms);
 void stopBenchTest();
 void stepBenchTestNonBlocking(uint32_t now_ms, float gx_rad, float gy_rad, float gz_rad,
                               float &m1, float &m2, float &m3, float &m4);
+
+static void runParamHook(CliHook h);
+static const CliParam* findCliParam(const char* name);
+static void printCliParam(const CliParam* p);
+static void writeCliParamValue(const CliParam* p, float val);
 
 namespace CliAutoCal {
   void init();
@@ -2218,21 +2238,6 @@ namespace CliAutoCal {
 // ==============================================================================
 // 10. ИНТЕРФЕЙС КОМАНДНОЙ СТРОКИ (CLI)
 // ==============================================================================
-enum CliValType : uint8_t { CLI_U8 = 0, CLI_I8 = 1, CLI_U16 = 2, CLI_F32 = 3 };
-enum CliHook : uint8_t {
-  HOOK_NONE = 0, HOOK_DSP_PID, HOOK_RTX, HOOK_IMU, HOOK_BARO, HOOK_MAG, HOOK_LIDAR,
-  HOOK_VTX_EN, HOOK_VTX_PROT, HOOK_VTX_MHZ, HOOK_VTX_MW
-};
-
-struct CliParam {
-  const char* name;
-  void* ptr;
-  CliValType type;
-  CliHook hook;
-  int min_v;
-  int max_v;
-};
-
 using CliActionFn = void (*)(const char* args);
 struct CliActionEntry { const char* name; bool has_args; bool requires_disarm; CliActionFn fn; };
 
