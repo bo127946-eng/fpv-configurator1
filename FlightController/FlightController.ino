@@ -1,6 +1,6 @@
 /*
  * Project: FPV Flight Controller Firmware (FC v3.40 / ESC: PWM & Oneshot125)
- * Target: STM32F103C8 (Blue Pill) + Multi-IMU/Baro/Mag/ToF + RTX(SPI2) + VTX(USART3 SA v2.1 / Tramp)
+ * Target: STM32F103C8 (Blue Pill) + Multi-IMU/Baro/Mag/ToF + RTX(SPI2) + VTX(PB10/PB11) + CDC & Serial1(PA9/PA10)
  */
 
 #include <Wire.h>
@@ -57,6 +57,8 @@ constexpr uint8_t MOTOR3_PIN = PA2;
 constexpr uint8_t MOTOR4_PIN = PA3;
 constexpr uint8_t BATTERY_PIN = PA4;
 constexpr uint8_t CURRENT_PIN = PA5;
+constexpr uint8_t SERIAL1_TX_PIN = PA9;
+constexpr uint8_t SERIAL1_RX_PIN = PA10;
 constexpr uint8_t VTX_TX_PIN = PB10;
 constexpr uint8_t VTX_RX_PIN = PB11;
 constexpr float SHUNT_RESISTANCE_OHM = 0.01f;
@@ -70,6 +72,7 @@ constexpr uint8_t RTX_BUSY_PIN = PB1;
 
 constexpr uint32_t EEPROM_MAGIC_MARKER = 0xFACE1371UL;
 constexpr uint32_t SERIAL_BAUD_RATE = 115200;
+constexpr uint32_t SERIAL1_BAUD_RATE = 115200;
 constexpr uint32_t SMARTAUDIO_BAUD_RATE = 4800;
 constexpr uint32_t TRAMP_BAUD_RATE = 9600;
 
@@ -110,6 +113,7 @@ enum DelayedRtxRespType : uint8_t {
   RTX_RESP_240_CHAN_SW = 240, RTX_RESP_250_VTX_ACK = 250
 };
 enum BenchTestMode : uint8_t { BENCH_TEST_NONE = 0, BENCH_TEST_MOTORS = 1, BENCH_TEST_PID = 2 };
+enum CliPortId : uint8_t { CLI_PORT_USB = 0, CLI_PORT_UART1 = 1 };
 
 enum CliValType : uint8_t { CLI_U8 = 0, CLI_I8 = 1, CLI_U16 = 2, CLI_F32 = 3 };
 enum CliHook : uint8_t {
@@ -317,7 +321,7 @@ void setMotorsPower(float m1, float m2, float m3, float m4, float max_cap = OUTP
 void resetMotorSlewState();
 void flightControlTask();
 void parseCli();
-void executeCommand(const char* cmd);
+void executeCommand(const char* cmd, CliPortId port = CLI_PORT_USB);
 float calculateSuperExpoRate(float in, float r, float s, float e);
 void setFcErrorRam(uint8_t err_code);
 void handleMotorArmStateAndEepromError();
@@ -356,8 +360,21 @@ namespace CliAutoCal {
 FlightConfig currentConfig;
 Quaternion orientation;
 
+HardwareSerial vtxSerial(VTX_RX_PIN, VTX_TX_PIN);
+HardwareSerial Serial1(SERIAL1_RX_PIN, SERIAL1_TX_PIN);
 SPIClass rtxSpi(RTX_MOSI_PIN, RTX_MISO_PIN, RTX_SCK_PIN);
 SPISettings rtxSpiSettings(8000000, MSBFIRST, SPI_MODE0);
+
+CliPortId active_cli_port = CLI_PORT_USB;
+CliPortId mon_cli_port = CLI_PORT_USB;
+
+static inline Print& cliOut() {
+  return (active_cli_port == CLI_PORT_UART1) ? (Print&)Serial1 : (Print&)Serial;
+}
+
+static inline Print& monOut() {
+  return (mon_cli_port == CLI_PORT_UART1) ? (Print&)Serial1 : (Print&)Serial;
+}
 
 uint8_t fc_error_ram = FC_ERR_NONE, fc_latched_error_ram = FC_ERR_NONE, last_sent_202_err = FC_ERR_NONE;
 uint32_t last_202_send_ms = 0;
@@ -717,6 +734,10 @@ void rtx_init_hardware() {
   rtx_active_chip_id = detectOrSelectRtxChip();
 }
 
+static uint32_t rtxFreqToReg(uint32_t freq_hz) {
+  return (uint32_t)(((uint64_t)freq_hz << 25) / 32000000UL);
+}
+
 void applyRtxConfiguration(bool use_backup_settings) {
   if (!currentConfig.rtx_en || !rtx_try_ready_short()) return;
   rtx_tx_in_flight = rtx_apply_switch_after_tx = rtx_scan_active = false;
@@ -735,7 +756,7 @@ void applyRtxConfiguration(bool use_backup_settings) {
 
   uint8_t band = constrain(currentConfig.rtx_band, 1, 9);
   uint8_t chan = use_backup_settings ? constrain(currentConfig.rtx_bak_chan, 0, 99) : constrain(active_rtx_chan, 0, 99);
-  uint32_t freq_reg = (uint32_t)(((uint64_t)((uint32_t)band * 100000000UL + (uint32_t)chan * 1000000UL) << 25) / 32000000UL);
+  uint32_t freq_reg = rtxFreqToReg((uint32_t)band * 100000000UL + (uint32_t)chan * 1000000UL);
   uint8_t fb[4] = {(uint8_t)(freq_reg >> 24), (uint8_t)(freq_reg >> 16), (uint8_t)(freq_reg >> 8), (uint8_t)freq_reg};
   rtx_write_command(0x86, fb, 4);
 
@@ -771,9 +792,8 @@ void stepChannelScanNonBlocking() {
   if (!rtx_scan_active || !currentConfig.rtx_en || rtx_tx_in_flight || rtx_recovering) return;
   if (digitalRead(RTX_BUSY_PIN) == HIGH) return;
 
-  uint32_t base_hz = (uint32_t)constrain(currentConfig.rtx_band, 1, 9) * 100000000UL;
-  uint32_t base_reg = (uint32_t)(((uint64_t)base_hz << 25) / 32000000UL);
-  uint32_t step_reg = (uint32_t)(((uint64_t)1000000UL << 25) / 32000000UL);
+  uint32_t base_reg = rtxFreqToReg((uint32_t)constrain(currentConfig.rtx_band, 1, 9) * 100000000UL);
+  uint32_t step_reg = rtxFreqToReg(1000000UL);
   uint8_t end_chan = rtx_scan_cursor + RTX_SCAN_CHANNELS_PER_TICK;
   if (end_chan > 100) end_chan = 100;
   uint32_t freq_reg = base_reg + ((uint32_t)rtx_scan_cursor * step_reg);
@@ -968,33 +988,36 @@ void pollTelemetryTxState() {
 // ==============================================================================
 // 7. УПРАВЛЕНИЕ VTX (SMARTAUDIO v2.1 / TRAMP)
 // ==============================================================================
-static inline float vtxMwToDbm(uint16_t mw) { return (mw == 0) ? 0.0f : (10.0f * log10f((float)mw)); }
-static inline uint16_t vtxDbmToMw(float dbm) {
-  float mw = powf(10.0f, constrain(dbm, 0.0f, 40.0f) / 10.0f);
-  return (uint16_t)lroundf(constrain(mw, 1.0f, 10000.0f));
-}
-static inline uint16_t vtxClampMw(uint16_t mw) { return (mw == 0) ? DEFAULT_VTX_MW : (uint16_t)constrain((int)mw, 1, 10000); }
-static inline uint8_t vtxEncodeSaDirectDbm(uint16_t mw) {
-  return (uint8_t)(0x80 | (constrain((int)lroundf(vtxMwToDbm(vtxClampMw(mw))), 0, 40) & 0x7F));
+static inline uint16_t vtxClampMw(uint16_t mw) {
+  return (mw == 0) ? DEFAULT_VTX_MW : (uint16_t)constrain((int)mw, 1, 10000);
 }
 
-static HardwareSerial* getVtxSerial() {
-#if defined(USART3)
-  return &Serial3;
-#elif defined(USART2)
-  return &Serial2;
-#else
-  return nullptr;
-#endif
+static uint8_t vtxMwToDbmInt(uint16_t mw) {
+  mw = vtxClampMw(mw);
+  if (mw >= 10000) return 40;
+  uint8_t db = 0; uint32_t v = mw;
+  while (v >= 10) { v /= 10; db += 10; }
+  if (v >= 8) db += 9; else if (v >= 6) db += 8; else if (v >= 5) db += 7;
+  else if (v >= 4) db += 6; else if (v >= 3) db += 5; else if (v >= 2) db += 3;
+  return (uint8_t)constrain((int)db, 0, 40);
+}
+
+static uint16_t vtxDbmToMwInt(uint8_t dbm) {
+  static const uint16_t kDec[4] = {1, 2, 4, 6};
+  uint8_t d = (uint8_t)constrain((int)dbm, 0, 40);
+  uint32_t mw = kDec[d % 10 < 3 ? 0 : (d % 10 < 5 ? 1 : (d % 10 < 8 ? 2 : 3))];
+  for (uint8_t b = 0; b < (d / 10); b++) mw *= 10;
+  return (uint16_t)constrain((long)mw, 1L, 10000L);
+}
+
+static inline uint8_t vtxEncodeSaDirectDbm(uint16_t mw) {
+  return (uint8_t)(0x80 | (vtxMwToDbmInt(mw) & 0x7F));
 }
 
 static void vtxEnsureBaud(HardwareSerial* ser, uint32_t baud) {
   if (!ser) return;
   if (!vtx_uart_ready || vtx_baud != baud) {
     if (vtx_uart_ready) { ser->flush(); ser->end(); }
-#if defined(USART3)
-    if (ser == &Serial3) { Serial3.setTx(VTX_TX_PIN); Serial3.setRx(VTX_RX_PIN); }
-#endif
     ser->begin(baud);
     vtx_baud = baud; vtx_uart_ready = true; tramp_rx_idx = sa_rx_idx = 0;
     while (ser->available() > 0) (void)ser->read();
@@ -1043,7 +1066,7 @@ static bool pollSmartAudioRx(HardwareSerial* ser) {
           if (smartAudioCrc8(sa_rx_buf, (uint8_t)(tlen - 1)) == sa_rx_buf[tlen - 1]) {
             if (plen >= 5) {
               uint8_t dbm = sa_rx_buf[8] & 0x7F;
-              if (dbm <= 40) { vtx_actual_dbm = (int8_t)dbm; vtx_actual_mw = vtxDbmToMw((float)dbm); }
+              if (dbm <= 40) { vtx_actual_dbm = (int8_t)dbm; vtx_actual_mw = vtxDbmToMwInt(dbm); }
             }
             seen = true;
           }
@@ -1066,7 +1089,7 @@ static bool pollTrampRx(HardwareSerial* ser) {
         if (tramp_rx_buf[15] == 0x00 && tramp_rx_buf[14] == trampCrc8(tramp_rx_buf)) {
           uint16_t v16 = (uint16_t)tramp_rx_buf[2] | ((uint16_t)tramp_rx_buf[3] << 8);
           if ((tramp_rx_buf[1] == 'r' || tramp_rx_buf[1] == 'v') && v16 > 0 && v16 <= 10000) {
-            vtx_actual_mw = v16; vtx_actual_dbm = (int8_t)constrain(lroundf(vtxMwToDbm(v16)), 0L, 40L);
+            vtx_actual_mw = v16; vtx_actual_dbm = (int8_t)vtxMwToDbmInt(v16);
           }
           seen = true;
         }
@@ -1078,8 +1101,8 @@ static bool pollTrampRx(HardwareSerial* ser) {
 }
 
 static bool sendSmartAudioFrame(uint8_t cmd, const uint8_t *pl, uint8_t plen) {
-  HardwareSerial* ser = getVtxSerial();
-  if (!ser || vtx_hw_unavailable) { setFcErrorRam(FC_ERR_SA_VTX_FAIL); return false; }
+  HardwareSerial* ser = &vtxSerial;
+  if (vtx_hw_unavailable) { setFcErrorRam(FC_ERR_SA_VTX_FAIL); return false; }
   vtxEnsureBaud(ser, SMARTAUDIO_BAUD_RATE);
   sa_rx_idx = 0; while (ser->available() > 0) (void)ser->read();
   uint8_t f[12], idx = 0;
@@ -1091,8 +1114,8 @@ static bool sendSmartAudioFrame(uint8_t cmd, const uint8_t *pl, uint8_t plen) {
 }
 
 static bool sendTrampFrame(char cmd, uint16_t param) {
-  HardwareSerial* ser = getVtxSerial();
-  if (!ser || vtx_hw_unavailable) { setFcErrorRam(FC_ERR_SA_VTX_FAIL); return false; }
+  HardwareSerial* ser = &vtxSerial;
+  if (vtx_hw_unavailable) { setFcErrorRam(FC_ERR_SA_VTX_FAIL); return false; }
   vtxEnsureBaud(ser, TRAMP_BAUD_RATE);
   tramp_rx_idx = 0; while (ser->available() > 0) (void)ser->read();
   uint8_t f[16]; memset(f, 0, 16);
@@ -1161,8 +1184,7 @@ void vtxInit() {
     vtx_uart_ready = vtx_send_freq_req = vtx_send_power_req = false;
     return;
   }
-  HardwareSerial* ser = getVtxSerial();
-  if (!ser) { vtx_uart_ready = false; vtx_hw_unavailable = true; vtxMarkFail(); return; }
+  HardwareSerial* ser = &vtxSerial;
   uint8_t proto = vtxResolveProto();
   vtxEnsureBaud(ser, (proto == VTX_PROTO_TRAMP) ? TRAMP_BAUD_RATE : SMARTAUDIO_BAUD_RATE);
   vtx_send_freq_req = vtx_send_power_req = true;
@@ -1177,8 +1199,7 @@ void vtxStepNonBlocking(uint32_t now_ms) {
   if (!currentConfig.vtx_en) { vtx_link_ok = false; vtx_probe_step = VTX_STEP_IDLE; return; }
   if (vtx_hw_unavailable) { setFcErrorRam(FC_ERR_SA_VTX_FAIL); return; }
   if (!vtx_uart_ready) { vtxInit(); if (!vtx_uart_ready) return; }
-  HardwareSerial* ser = getVtxSerial();
-  if (!ser) { vtx_hw_unavailable = true; vtxMarkFail(); return; }
+  HardwareSerial* ser = &vtxSerial;
 
   uint8_t known = vtxResolveProto();
   bool auto_fb = (currentConfig.vtx_prot == VTX_PROT_AUTO) && (known == VTX_PROTO_NONE);
@@ -1705,15 +1726,15 @@ namespace SensorDriver {
   }
 
   void calibrateBaro() {
-    if (!activeSensors.baro_found || !baroCal.valid) { Serial.println("ERR: baro"); return; }
+    if (!activeSensors.baro_found || !baroCal.valid) { cliOut().println("ERR: baro"); return; }
     float sum = 0.0f; uint8_t ok_c = 0;
     for (uint8_t i = 0; i < 12; i++) { float ra = 0.0f; if (readRawBaroAltitudeBlocking(ra)) { sum += ra; ok_c++; } }
     if (ok_c > 0) {
       baro_ground_alt_m = sum / (float)ok_c;
       lpf_baro_alt.output = lpf_baro_vz.output = baro_alt_m = baro_vz_mps = 0.0f;
       ms5611_phase = MS_IDLE; bmp180_phase = B180_IDLE; baro_cal_ready = true;
-      Serial.println("OK: cal_bar");
-    } else Serial.println("ERR: cal_bar");
+      cliOut().println("OK: cal_bar");
+    } else cliOut().println("ERR: cal_bar");
   }
 
   void initMagHardware() {
@@ -1879,21 +1900,21 @@ namespace SensorDriver {
   }
 
   void calibrateLidar() {
-    if (!activeSensors.lidar_found) { Serial.println("ERR: lidar"); return; }
+    if (!activeSensors.lidar_found) { cliOut().println("ERR: lidar"); return; }
     float sum = 0.0f; uint8_t ok = 0;
     for (uint8_t i = 0; i < 20; i++) { float sm = 0.0f; if (readRawLidarSlantMeters(sm)) { sum += sm; ok++; } delay(15); }
-    if (ok > 0) { currentConfig.lidar_offset_m = -(sum / (float)ok); adaptive_lidar.reset(); saveSettings(); Serial.println("OK: cal_lid"); }
-    else Serial.println("ERR: cal_lid");
+    if (ok > 0) { currentConfig.lidar_offset_m = -(sum / (float)ok); adaptive_lidar.reset(); saveSettings(); cliOut().println("OK: cal_lid"); }
+    else cliOut().println("ERR: cal_lid");
   }
 
   void calibrateBatVoltage(float actual_v) {
-    if (!isfinite(actual_v) || actual_v < 1.0f || actual_v > 60.0f) { Serial.println("ERR: cal_bat"); return; }
+    if (!isfinite(actual_v) || actual_v < 1.0f || actual_v > 60.0f) { cliOut().println("ERR: cal_bat"); return; }
     long sum = 0; for (uint8_t i = 0; i < 32; i++) { sum += analogRead(BATTERY_PIN); delay(2); }
     float pv = (((float)sum / 32.0f) / 4095.0f) * 3.3f;
-    if (pv < 0.01f) { Serial.println("ERR: adc"); return; }
+    if (pv < 0.01f) { cliOut().println("ERR: adc"); return; }
     currentConfig.bat_scale_v = actual_v / pv;
     v_batt = lpf_battery.output = actual_v; batt_valid = true; power_w = v_batt * current_a;
-    saveSettings(); Serial.println("OK: cal_bat");
+    saveSettings(); cliOut().println("OK: cal_bat");
   }
 
   void calibrateCurrent(bool has_val, float actual_a) {
@@ -1901,18 +1922,18 @@ namespace SensorDriver {
     float sa = ((((float)sum / 32.0f) / 4095.0f) * 3.3f) / SHUNT_RESISTANCE_OHM;
     if (!has_val || fabsf(actual_a) < 0.001f) {
       currentConfig.bat_offset_a = sa; current_a = power_w = lpf_current.output = 0.0f;
-      saveSettings(); Serial.println("OK: cal_curr"); return;
+      saveSettings(); cliOut().println("OK: cal_curr"); return;
     }
-    if (!isfinite(actual_a) || actual_a < 0.0f || actual_a > 250.0f) { Serial.println("ERR: cal_curr"); return; }
+    if (!isfinite(actual_a) || actual_a < 0.0f || actual_a > 250.0f) { cliOut().println("ERR: cal_curr"); return; }
     float da = sa - currentConfig.bat_offset_a;
-    if (fabsf(da) < 0.01f) { Serial.println("ERR: cal_curr"); return; }
+    if (fabsf(da) < 0.01f) { cliOut().println("ERR: cal_curr"); return; }
     currentConfig.bat_scale_a = constrain(actual_a / da, 0.05f, 20.0f);
     current_a = lpf_current.output = actual_a; power_w = v_batt * current_a;
-    saveSettings(); Serial.println("OK: cal_curr");
+    saveSettings(); cliOut().println("OK: cal_curr");
   }
 
   bool calibrateGyro(bool silent) {
-    if (!activeSensors.imu_found) { if (!silent) Serial.println("ERR: imu"); return false; }
+    if (!activeSensors.imu_found) { if (!silent) cliOut().println("ERR: imu"); return false; }
     float sgx = 0.0f, sgy = 0.0f, sgz = 0.0f, st = 0.0f; uint16_t ok = 0;
     for (uint16_t i = 0; i < 200; i++) {
       uint8_t b[14];
@@ -1925,15 +1946,15 @@ namespace SensorDriver {
       }
       delay(4);
     }
-    if (ok == 0) { if (!silent) Serial.println("ERR: cal_gyro"); return false; }
+    if (ok == 0) { if (!silent) cliOut().println("ERR: cal_gyro"); return false; }
     currentConfig.gyro_bias_x = sgx / (float)ok; currentConfig.gyro_bias_y = sgy / (float)ok;
     currentConfig.gyro_bias_z = sgz / (float)ok; currentConfig.base_temperature = st / (float)ok;
-    if (!silent) { saveSettings(); Serial.println("OK: cal_gyro"); }
+    if (!silent) { saveSettings(); cliOut().println("OK: cal_gyro"); }
     return true;
   }
 
   bool calibrateAcc(bool silent) {
-    if (!activeSensors.imu_found) { if (!silent) Serial.println("ERR: imu"); return false; }
+    if (!activeSensors.imu_found) { if (!silent) cliOut().println("ERR: imu"); return false; }
     float sax = 0.0f, say = 0.0f, saz = 0.0f; uint16_t ok = 0;
     for (uint16_t i = 0; i < 200; i++) {
       uint8_t b[14];
@@ -1946,16 +1967,16 @@ namespace SensorDriver {
       }
       delay(4);
     }
-    if (ok == 0) { if (!silent) Serial.println("ERR: cal_acc"); return false; }
+    if (ok == 0) { if (!silent) cliOut().println("ERR: cal_acc"); return false; }
     currentConfig.acc_bias_x = sax / (float)ok; currentConfig.acc_bias_y = say / (float)ok; currentConfig.acc_bias_z = (saz / (float)ok) - 1.0f;
-    if (!silent) { saveSettings(); Serial.println("OK: cal_acc"); }
+    if (!silent) { saveSettings(); cliOut().println("OK: cal_acc"); }
     return true;
   }
 
   void calibrateIMU() {
-    if (!activeSensors.imu_found) { Serial.println("ERR: imu"); return; }
-    if (!calibrateGyro(true) || !calibrateAcc(true)) { Serial.println("ERR: cal_imu"); return; }
-    saveSettings(); Serial.println("OK: cal_imu");
+    if (!activeSensors.imu_found) { cliOut().println("ERR: imu"); return; }
+    if (!calibrateGyro(true) || !calibrateAcc(true)) { cliOut().println("ERR: cal_imu"); return; }
+    saveSettings(); cliOut().println("OK: cal_imu");
   }
 
   void autoDetectAll() {
@@ -1967,11 +1988,11 @@ namespace SensorDriver {
 } // namespace SensorDriver
 
 void startMagCalibrationNonBlocking() {
-  if (!SensorDriver::activeSensors.mag_found) { Serial.println("ERR: mag"); return; }
+  if (!SensorDriver::activeSensors.mag_found) { cliOut().println("ERR: mag"); return; }
   mag_cal_active = true; mag_cal_start_ms = millis(); mag_cal_last_sample_ms = 0;
   mag_cal_min_x = mag_cal_min_y = mag_cal_min_z = 1e9f;
   mag_cal_max_x = mag_cal_max_y = mag_cal_max_z = -1e9f;
-  Serial.println("OK: cal_mag");
+  cliOut().println("OK: cal_mag");
 }
 
 void stepMagCalibrationNonBlocking(uint32_t now_ms) {
@@ -1991,26 +2012,27 @@ void stepMagCalibrationNonBlocking(uint32_t now_ms) {
       currentConfig.mag_bias_x = 0.5f * (mag_cal_min_x + mag_cal_max_x);
       currentConfig.mag_bias_y = 0.5f * (mag_cal_min_y + mag_cal_max_y);
       currentConfig.mag_bias_z = 0.5f * (mag_cal_min_z + mag_cal_max_z);
-      saveSettings(); Serial.println("DONE: cal_mag");
-    } else Serial.println("ERR: cal_mag");
+      saveSettings(); monOut().println("DONE: cal_mag");
+    } else monOut().println("ERR: cal_mag");
   }
 }
 
 void stepMonitorStreamNonBlocking(uint32_t now_ms) {
   if (!mon_stream_active || (now_ms - mon_last_send_ms) < MON_STREAM_PERIOD_MS) return;
   mon_last_send_ms = now_ms;
+  Print& out = monOut();
   float q0 = orientation.q0, q1 = orientation.q1, q2 = orientation.q2, q3 = orientation.q3;
   float r = atan2f(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2)) * FC_RAD_TO_DEG;
   float p = asinf(constrain(2.0f * (q0 * q2 - q3 * q1), -1.0f, 1.0f)) * FC_RAD_TO_DEG;
-  Serial.print("MON: err="); Serial.print((int)getActiveStatusErrorCode());
-  Serial.print(" arm="); Serial.print(is_armed ? 1 : 0);
-  Serial.print(" fs="); Serial.print(is_failsafe ? 1 : 0);
-  Serial.print(" cpu="); Serial.print(cpu_load_pct, 1); Serial.print("/"); Serial.print(cpu_max_load_pct, 1);
-  Serial.print(" vib="); Serial.print(vibration_index, 1);
-  Serial.print(" rp="); Serial.print(r, 1); Serial.print(","); Serial.print(p, 1);
-  Serial.print(" alt="); Serial.print(baro_alt_m, 2); Serial.print(" lid="); Serial.print(dbg_lidar_m, 2);
-  Serial.print(" v="); Serial.print(v_batt, 2); Serial.print(" i="); Serial.print(current_a, 2);
-  Serial.print(" lq="); Serial.println((int)current_link_quality);
+  out.print("MON: err="); out.print((int)getActiveStatusErrorCode());
+  out.print(" arm="); out.print(is_armed ? 1 : 0);
+  out.print(" fs="); out.print(is_failsafe ? 1 : 0);
+  out.print(" cpu="); out.print(cpu_load_pct, 1); out.print("/"); out.print(cpu_max_load_pct, 1);
+  out.print(" vib="); out.print(vibration_index, 1);
+  out.print(" rp="); out.print(r, 1); out.print(","); out.print(p, 1);
+  out.print(" alt="); out.print(baro_alt_m, 2); out.print(" lid="); out.print(dbg_lidar_m, 2);
+  out.print(" v="); out.print(v_batt, 2); out.print(" i="); out.print(current_a, 2);
+  out.print(" lq="); out.println((int)current_link_quality);
 }
 
 void readBatteryAndCurrent() {
@@ -2109,8 +2131,8 @@ namespace CliAutoCal {
     if ((now_ms - btn_deb_ms) >= BTN_DEBOUNCE_MS && r != btn_deb) { btn_deb = r; btn_press_ms = r ? now_ms : 0; btn_hold = false; }
     if (btn_deb && !btn_hold && (now_ms - btn_press_ms) >= BTN_HOLD_MS) {
       btn_hold = true;
-      if (state != IDLE && state != ABORT && state != SAVE_DONE) { stop(REASON_USER_CANCEL, FC_ERR_NONE); Serial.println("OK: auto_stop"); }
-      else { start(); Serial.println("OK: auto_cal"); }
+      if (state != IDLE && state != ABORT && state != SAVE_DONE) { stop(REASON_USER_CANCEL, FC_ERR_NONE); monOut().println("OK: auto_stop"); }
+      else { start(); monOut().println("OK: auto_cal"); }
     }
   }
 
@@ -2236,7 +2258,7 @@ namespace CliAutoCal {
 } // namespace CliAutoCal
 
 // ==============================================================================
-// 10. ИНТЕРФЕЙС КОМАНДНОЙ СТРОКИ (CLI)
+// 10. ИНТЕРФЕЙС КОМАНДНОЙ СТРОКИ (CLI: USB CDC + Serial1)
 // ==============================================================================
 using CliActionFn = void (*)(const char* args);
 struct CliActionEntry { const char* name; bool has_args; bool requires_disarm; CliActionFn fn; };
@@ -2394,12 +2416,13 @@ static const CliParam* findCliParam(const char* name) {
 
 static void printCliParam(const CliParam* p) {
   if (!p) return;
-  Serial.print(p->name); Serial.print('=');
-  if (strcmp(p->name, "bat_v_max") == 0) { Serial.println(*(float*)p->ptr, 1); return; }
-  if (p->type == CLI_F32) Serial.println(*(float*)p->ptr, 4);
-  else if (p->type == CLI_U8) Serial.println((int)*(uint8_t*)p->ptr);
-  else if (p->type == CLI_I8) Serial.println((int)*(int8_t*)p->ptr);
-  else Serial.println((unsigned int)*(uint16_t*)p->ptr);
+  Print& out = cliOut();
+  out.print(p->name); out.print('=');
+  if (strcmp(p->name, "bat_v_max") == 0) { out.println(*(float*)p->ptr, 1); return; }
+  if (p->type == CLI_F32) out.println(*(float*)p->ptr, 4);
+  else if (p->type == CLI_U8) out.println((int)*(uint8_t*)p->ptr);
+  else if (p->type == CLI_I8) out.println((int)*(int8_t*)p->ptr);
+  else out.println((unsigned int)*(uint16_t*)p->ptr);
 }
 
 static void writeCliParamValue(const CliParam* p, float val) {
@@ -2433,7 +2456,7 @@ static const char* lidarChipName(uint8_t t) {
 }
 
 static void actHelp(const char*) {
-  Serial.println("OK: set get dump save default cal_imu cal_gyro cal_acc cal_mag cal_bar cal_lid cal_bat cal_curr auto_cal auto_stop mon test_imu test_mag test_bar test_lid test_bat test_rtx test_vtx test_mot test_pid");
+  cliOut().println("OK: set get dump save default cal_imu cal_gyro cal_acc cal_mag cal_bar cal_lid cal_bat cal_curr auto_cal auto_stop mon test_imu test_mag test_bar test_lid test_bat test_rtx test_vtx test_mot test_pid");
 }
 static void actSet(const char* args) {
   args = skipSpaces(args);
@@ -2442,13 +2465,13 @@ static void actSet(const char* args) {
     if (kl < sizeof(key) - 1) key[kl] = args[kl]; kl++;
   }
   key[kl] = '\0';
-  if (!kl) { Serial.println("ERR: set"); return; }
+  if (!kl) { cliOut().println("ERR: set"); return; }
   const char* vs = skipSpaces(args + kl);
   if (*vs == '=') vs = skipSpaces(vs + 1);
   float val = 0.0f;
-  if (!parseNumberStrict(vs, val)) { Serial.println("ERR: val"); return; }
+  if (!parseNumberStrict(vs, val)) { cliOut().println("ERR: val"); return; }
   const CliParam* p = findCliParam(key);
-  if (!p) { Serial.println("ERR: param"); return; }
+  if (!p) { cliOut().println("ERR: param"); return; }
   writeCliParamValue(p, val); runParamHook(p->hook); printCliParam(p);
 }
 static void actGet(const char* args) {
@@ -2456,19 +2479,19 @@ static void actGet(const char* args) {
   while (s[i] && s[i] != ' ' && s[i] != '\t' && s[i] != '\r' && s[i] != '\n') { if (i < sizeof(cn) - 1) cn[i] = s[i]; i++; }
   cn[i] = '\0';
   const CliParam* p = findCliParam(cn);
-  if (!p) { Serial.println("ERR: param"); return; }
+  if (!p) { cliOut().println("ERR: param"); return; }
   printCliParam(p);
 }
 static void actDump(const char*) {
   constexpr size_t n = sizeof(cliParams) / sizeof(cliParams[0]);
   for (size_t i = 0; i < n; i++) printCliParam(&cliParams[i]);
 }
-static void actSave(const char*) { if (CliAutoCal::isFlightActive()) { Serial.println("ERR: busy"); return; } saveSettings(); Serial.println("OK: save"); }
+static void actSave(const char*) { if (CliAutoCal::isFlightActive()) { cliOut().println("ERR: busy"); return; } saveSettings(); cliOut().println("OK: save"); }
 static void actDefault(const char*) {
-  if (CliAutoCal::isFlightActive()) { Serial.println("ERR: busy"); return; }
+  if (CliAutoCal::isFlightActive()) { cliOut().println("ERR: busy"); return; }
   resetToFactoryDefaults(); vtxInit();
   if (currentConfig.rtx_en) applyRtxConfiguration(false);
-  Serial.println("OK: default");
+  cliOut().println("OK: default");
 }
 static void actCalImu(const char*) { SensorDriver::calibrateIMU(); }
 static void actCalGyro(const char*) { (void)SensorDriver::calibrateGyro(false); }
@@ -2476,68 +2499,76 @@ static void actCalAcc(const char*) { (void)SensorDriver::calibrateAcc(false); }
 static void actCalMag(const char*) { startMagCalibrationNonBlocking(); }
 static void actCalBar(const char*) { SensorDriver::calibrateBaro(); }
 static void actCalLid(const char*) { SensorDriver::calibrateLidar(); }
-static void actCalBat(const char* args) { float v = 0.0f; if (!parseNumberStrict(args, v)) { Serial.println("ERR: cal_bat"); return; } SensorDriver::calibrateBatVoltage(v); }
+static void actCalBat(const char* args) { float v = 0.0f; if (!parseNumberStrict(args, v)) { cliOut().println("ERR: cal_bat"); return; } SensorDriver::calibrateBatVoltage(v); }
 static void actCalCurr(const char* args) {
   const char* s = skipSpaces(args);
   if (!s || !*s) { SensorDriver::calibrateCurrent(false, 0.0f); return; }
-  float a = 0.0f; if (!parseNumberStrict(s, a)) { Serial.println("ERR: cal_curr"); return; }
+  float a = 0.0f; if (!parseNumberStrict(s, a)) { cliOut().println("ERR: cal_curr"); return; }
   SensorDriver::calibrateCurrent(true, a);
 }
-static void actAutoCal(const char*) { CliAutoCal::start(); Serial.println("OK: auto_cal"); }
-static void actAutoStop(const char*) { CliAutoCal::stop(CliAutoCal::REASON_USER_CANCEL, FC_ERR_NONE); Serial.println("OK: auto_stop"); }
-static void actMon(const char*) { mon_stream_active = true; mon_last_send_ms = 0; Serial.println("OK: mon"); }
+static void actAutoCal(const char*) { CliAutoCal::start(); cliOut().println("OK: auto_cal"); }
+static void actAutoStop(const char*) { CliAutoCal::stop(CliAutoCal::REASON_USER_CANCEL, FC_ERR_NONE); cliOut().println("OK: auto_stop"); }
+static void actMon(const char*) { mon_cli_port = active_cli_port; mon_stream_active = true; mon_last_send_ms = 0; cliOut().println("OK: mon"); }
 
 static void actTestImu(const char*) {
+  Print& out = cliOut();
   float q0 = orientation.q0, q1 = orientation.q1, q2 = orientation.q2, q3 = orientation.q3;
   float r = atan2f(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2)) * FC_RAD_TO_DEG;
   float p = asinf(constrain(2.0f * (q0 * q2 - q3 * q1), -1.0f, 1.0f)) * FC_RAD_TO_DEG;
-  Serial.print("IMU: "); Serial.print(imuChipName((uint8_t)SensorDriver::activeSensors.imu_type));
-  Serial.print(" err="); Serial.print((int)getActiveStatusErrorCode());
-  Serial.print(" rp="); Serial.print(r, 1); Serial.print(","); Serial.print(p, 1);
-  Serial.print(" t="); Serial.println(current_chip_temp, 1);
+  out.print("IMU: "); out.print(imuChipName((uint8_t)SensorDriver::activeSensors.imu_type));
+  out.print(" err="); out.print((int)getActiveStatusErrorCode());
+  out.print(" rp="); out.print(r, 1); out.print(","); out.print(p, 1);
+  out.print(" t="); out.println(current_chip_temp, 1);
 }
 static void actTestMag(const char*) {
+  Print& out = cliOut();
   float mx, my, mz; bool ok = SensorDriver::readMagUnified(mx, my, mz);
-  Serial.print("MAG: "); Serial.print(magChipName((uint8_t)SensorDriver::activeSensors.mag_type));
-  Serial.print(" ok="); Serial.print(ok ? 1 : 0);
-  Serial.print(" xyz="); Serial.print(mx, 1); Serial.print(","); Serial.print(my, 1); Serial.print(","); Serial.print(mz, 1);
-  Serial.print(" hdg="); Serial.println(compass_heading_deg, 1);
+  out.print("MAG: "); out.print(magChipName((uint8_t)SensorDriver::activeSensors.mag_type));
+  out.print(" ok="); out.print(ok ? 1 : 0);
+  out.print(" xyz="); out.print(mx, 1); out.print(","); out.print(my, 1); out.print(","); out.print(mz, 1);
+  out.print(" hdg="); out.println(compass_heading_deg, 1);
 }
 static void actTestBar(const char*) {
+  Print& out = cliOut();
   float ra = 0.0f; bool ok = SensorDriver::readRawBaroAltitudeBlocking(ra);
-  Serial.print("BAR: "); Serial.print(baroChipName((uint8_t)SensorDriver::activeSensors.baro_type));
-  Serial.print(" ok="); Serial.print(ok ? 1 : 0); Serial.print(" raw="); Serial.print(ra, 2); Serial.print(" alt="); Serial.println(baro_alt_m, 2);
+  out.print("BAR: "); out.print(baroChipName((uint8_t)SensorDriver::activeSensors.baro_type));
+  out.print(" ok="); out.print(ok ? 1 : 0); out.print(" raw="); out.print(ra, 2); out.print(" alt="); out.println(baro_alt_m, 2);
 }
 static void actTestLid(const char*) {
+  Print& out = cliOut();
   float sm = 0.0f; bool ok = SensorDriver::readRawLidarSlantMeters(sm);
-  Serial.print("LID: "); Serial.print(lidarChipName((uint8_t)SensorDriver::activeSensors.lidar_type));
-  Serial.print(" ok="); Serial.print(ok ? 1 : 0); Serial.print(" sl="); Serial.print(sm, 3); Serial.print(" d="); Serial.println(dbg_lidar_m, 3);
+  out.print("LID: "); out.print(lidarChipName((uint8_t)SensorDriver::activeSensors.lidar_type));
+  out.print(" ok="); out.print(ok ? 1 : 0); out.print(" sl="); out.print(sm, 3); out.print(" d="); out.println(dbg_lidar_m, 3);
 }
 static void actTestBat(const char*) {
-  Serial.print("BAT: v="); Serial.print(v_batt, 2); Serial.print(" i="); Serial.print(current_a, 2);
-  Serial.print(" w="); Serial.print(power_w, 1); Serial.print(" wh="); Serial.println(consumed_wh, 3);
+  Print& out = cliOut();
+  out.print("BAT: v="); out.print(v_batt, 2); out.print(" i="); out.print(current_a, 2);
+  out.print(" w="); out.print(power_w, 1); out.print(" wh="); out.println(consumed_wh, 3);
 }
 static void actTestRtx(const char*) {
-  Serial.print("RTX: en="); Serial.print(currentConfig.rtx_en ? 1 : 0);
-  Serial.print(" chip="); Serial.print(rtxChipName(rtx_active_chip_id));
-  Serial.print(" ch="); Serial.print((int)active_rtx_chan);
-  Serial.print(" bak="); Serial.print(is_on_backup ? 1 : 0);
-  Serial.print(" lq="); Serial.println((int)current_link_quality);
+  Print& out = cliOut();
+  out.print("RTX: en="); out.print(currentConfig.rtx_en ? 1 : 0);
+  out.print(" chip="); out.print(rtxChipName(rtx_active_chip_id));
+  out.print(" ch="); out.print((int)active_rtx_chan);
+  out.print(" bak="); out.print(is_on_backup ? 1 : 0);
+  out.print(" lq="); out.println((int)current_link_quality);
 }
 static void actTestVtx(const char*) {
-  Serial.print("VTX: en="); Serial.print(currentConfig.vtx_en ? 1 : 0);
-  Serial.print(" link="); Serial.print(vtx_link_ok ? 1 : 0);
-  Serial.print(" mhz="); Serial.print(currentConfig.vtx_mhz);
-  Serial.print(" mw="); Serial.print(currentConfig.vtx_mw);
-  Serial.print(" act="); Serial.println(vtx_actual_mw);
+  Print& out = cliOut();
+  out.print("VTX: en="); out.print(currentConfig.vtx_en ? 1 : 0);
+  out.print(" link="); out.print(vtx_link_ok ? 1 : 0);
+  out.print(" mhz="); out.print(currentConfig.vtx_mhz);
+  out.print(" mw="); out.print(currentConfig.vtx_mw);
+  out.print(" act="); out.println(vtx_actual_mw);
 }
 
 static void startBenchTestMode(BenchTestMode mode, const char* tag) {
-  if (is_armed || CliAutoCal::isFlightActive()) { Serial.println("ERR: armed"); return; }
-  if (!SensorDriver::activeSensors.imu_found || err_imu_fail) { Serial.println("ERR: imu"); return; }
+  Print& out = cliOut();
+  if (is_armed || CliAutoCal::isFlightActive()) { out.println("ERR: armed"); return; }
+  if (!SensorDriver::activeSensors.imu_found || err_imu_fail) { out.println("ERR: imu"); return; }
   rollRatePID.reset(); pitchRatePID.reset(); yawRatePID.reset(); resetMotorSlewState();
   bench_test_mode = mode; bench_test_start_ms = millis();
-  Serial.print("OK: "); Serial.println(tag);
+  out.print("OK: "); out.println(tag);
 }
 
 void stopBenchTest() {
@@ -2583,7 +2614,8 @@ static bool matchActionPrefix(const char* s, const char* name, bool has_args, co
   return false;
 }
 
-void executeCommand(const char* cmd) {
+void executeCommand(const char* cmd, CliPortId port) {
+  active_cli_port = port;
   const char* s = skipSpaces(cmd);
   if (!s || !*s) return;
   mon_stream_active = false;
@@ -2591,24 +2623,33 @@ void executeCommand(const char* cmd) {
   for (size_t i = 0; i < n; i++) {
     const char* args = nullptr;
     if (matchActionPrefix(s, cliActions[i].name, cliActions[i].has_args, args)) {
-      if (cliActions[i].requires_disarm && is_armed) { Serial.println("ERR: armed"); return; }
+      if (cliActions[i].requires_disarm && is_armed) { cliOut().println("ERR: armed"); return; }
       cliActions[i].fn(args); return;
     }
   }
-  Serial.println("ERR: cmd");
+  cliOut().println("ERR: cmd");
+}
+
+static void pollSingleSerialPort(Stream &port_stream, CliPortId port_id, char* buf, size_t buf_sz, size_t &idx) {
+  uint8_t budget = 32;
+  while (port_stream.available() > 0 && budget-- > 0) {
+    char c = (char)port_stream.read();
+    if (c == '\r' || c == '\n') {
+      if (idx > 0) { buf[idx] = '\0'; idx = 0; executeCommand(buf, port_id); }
+    } else if (c == '\b' || (uint8_t)c == 127) {
+      if (idx > 0) idx--;
+    } else if ((uint8_t)c >= 32 && (uint8_t)c < 127) {
+      if (idx < buf_sz - 1) buf[idx++] = c;
+      else { idx = 0; active_cli_port = port_id; cliOut().println("ERR: len"); }
+    }
+  }
 }
 
 void parseCli() {
-  static char buf[128]; static size_t idx = 0;
-  while (Serial.available() > 0) {
-    char c = (char)Serial.read();
-    if (c == '\r' || c == '\n') { if (idx > 0) { buf[idx] = '\0'; idx = 0; executeCommand(buf); } }
-    else if (c == '\b' || (uint8_t)c == 127) { if (idx > 0) idx--; }
-    else if ((uint8_t)c >= 32 && (uint8_t)c < 127) {
-      if (idx < sizeof(buf) - 1) buf[idx++] = c;
-      else { idx = 0; Serial.println("ERR: len"); }
-    }
-  }
+  static char usb_buf[128]; static size_t usb_idx = 0;
+  static char uart1_buf[128]; static size_t uart1_idx = 0;
+  pollSingleSerialPort(Serial, CLI_PORT_USB, usb_buf, sizeof(usb_buf), usb_idx);
+  pollSingleSerialPort(Serial1, CLI_PORT_UART1, uart1_buf, sizeof(uart1_buf), uart1_idx);
 }
 
 // ==============================================================================
@@ -2804,6 +2845,7 @@ void flightControlTask() {
 // ==============================================================================
 void setup() {
   Serial.begin(SERIAL_BAUD_RATE);
+  Serial1.begin(SERIAL1_BAUD_RATE);
   delay(POWER_ON_SETTLE_MS);
 
   analogReadResolution(12);
@@ -2817,41 +2859,51 @@ void setup() {
 
   Wire.setSCL(PB6); Wire.setSDA(PB7); Wire.begin(); Wire.setClock(400000);
   SensorDriver::autoDetectAll();
-  CliAutoCal::init();
 
   main_rtx_chan = active_rtx_chan = constrain(currentConfig.rtx_pri_chan, 0, 99);
   is_on_backup = false;
-  if (currentConfig.rtx_en) { rtx_init_hardware(); applyRtxConfiguration(false); }
+  rtx_init_hardware();
+  if (currentConfig.rtx_en) applyRtxConfiguration(false);
+
   vtxInit();
+  CliAutoCal::init();
 }
 
 void loop() {
-  static uint32_t last_loop_us = micros();
+  static uint32_t last_loop_us = 0;
   uint32_t now_us = micros();
-  if ((now_us - last_loop_us) >= LOOP_INTERVAL_US) {
-    uint32_t jitter = (now_us - last_loop_us) - LOOP_INTERVAL_US;
-    last_loop_us = now_us;
-    if (jitter > LOOP_OVERRUN_MARGIN_US) setFcErrorRam(FC_ERR_LOOP_OVERRUN);
+  if (last_loop_us == 0) last_loop_us = now_us;
 
-    uint32_t t0 = micros();
+  if ((now_us - last_loop_us) >= LOOP_INTERVAL_US) {
+    last_loop_us += LOOP_INTERVAL_US;
+    if ((micros() - last_loop_us) >= LOOP_INTERVAL_US) last_loop_us = micros();
+
+    uint32_t task_start_us = micros();
     handleMotorArmStateAndEepromError();
     flightControlTask();
-    cpu_load_pct = ((float)(micros() - t0) / (float)LOOP_INTERVAL_US) * 100.0f;
-    if (cpu_load_pct > cpu_max_load_pct) cpu_max_load_pct = cpu_load_pct;
+    uint32_t elapsed_us = micros() - task_start_us;
+
+    float load_pct = ((float)elapsed_us / (float)LOOP_INTERVAL_US) * 100.0f;
+    if (isfinite(load_pct)) {
+      cpu_load_pct = 0.2f * load_pct + 0.8f * cpu_load_pct;
+      if (load_pct > cpu_max_load_pct) cpu_max_load_pct = load_pct;
+    }
+    if (elapsed_us > (LOOP_INTERVAL_US + LOOP_OVERRUN_MARGIN_US)) setFcErrorRam(FC_ERR_LOOP_OVERRUN);
   }
 
   uint32_t now_ms = millis();
+  parseCli();
   CliAutoCal::pollButton(now_ms);
-  updateAuxSensorsNonBlocking(now_ms);
   stepMagCalibrationNonBlocking(now_ms);
-  vtxStepNonBlocking(now_ms);
+  stepMonitorStreamNonBlocking(now_ms);
   serviceError202Event(now_ms);
-
+  updateAuxSensorsNonBlocking(now_ms);
+  vtxStepNonBlocking(now_ms);
   pollTelemetryTxState();
   stepChannelScanNonBlocking();
-  readRx();
-  if (send_telemetry_pending) startTelemetryNonBlocking();
 
-  parseCli();
-  stepMonitorStreamNonBlocking(now_ms);
+  if (send_telemetry_pending && !rtx_tx_in_flight && !rtx_scan_active && !rtx_recovering) {
+    startTelemetryNonBlocking();
+  }
+  readRx();
 }
