@@ -333,10 +333,6 @@ namespace CliAutoCal {
                   float &m1, float &m2, float &m3, float &m4);
 }
 
-#if defined(USART3)
-HardwareSerial Serial3(USART3);
-#endif
-
 FlightConfig currentConfig;
 Quaternion orientation;
 
@@ -1437,13 +1433,6 @@ namespace SensorDriver {
   inline float pressureToAltitudeMeters(float p_pa) { return 44330.0f * (1.0f - powf(p_pa / 101325.0f, 0.1903f)); }
   inline bool isPressureValidPa(float p_pa) { return p_pa >= 30000.0f && p_pa <= 125000.0f && isfinite(p_pa); }
   static void markBaroError() { err_aux_i2c_fail = true; setFcErrorRam(FC_ERR_BARO_FAIL); }
-
-  static float dps310ScaleFromReg(uint8_t c) {
-    switch (c & 0x07) {
-      case 0: return 524288.0f; case 1: return 1572864.0f; case 2: return 3670016.0f; case 3: return 7864320.0f;
-      case 4: return 253952.0f; case 5: return 516096.0f; case 6: return 1040384.0f; default: return 2088960.0f;
-    }
-  }
 
   bool readBme280PressurePa(float &p_pa) {
     uint8_t raw[6]; if (!readReg(activeSensors.baro_addr, 0xF7, raw, 6)) return false;
