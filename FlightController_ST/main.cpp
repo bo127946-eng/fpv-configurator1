@@ -1122,7 +1122,9 @@ void stepChannelScanNonBlocking() {
   rtx_scan_cursor = end_chan;
   if (rtx_scan_cursor >= 100) {
     uint8_t best = 0, min_n = 255;
-    for (uint8_t i = 0; i < 100; i++) if (rtx_noise_floor[i] < min_n) { min_n = rtx_noise_floor[i]; best = i; }
+    for (uint8_t i = 0; i < 100; i++) {
+      if (rtx_noise_floor[i] < min_n) { min_n = rtx_noise_floor[i]; best = i; }
+    }
     rtx_best_clean_chan = best; rtx_scan_active = false;
     queueDelayedRtxResponse(RTX_RESP_230_SCAN_BEST, rtx_best_clean_chan, 0, 0);
 
@@ -1522,7 +1524,12 @@ void vtxStepNonBlocking(uint32_t now_ms) {
   }
   if (vtx_probe_step == VTX_STEP_WAIT_CMD_ACK) {
     bool ack = (known == VTX_PROTO_TRAMP) ? pollTrampRx() : pollSmartAudioRx();
-    if (ack) { vtxMarkOk(known ? known : VTX_PROTO_SMARTAUDIO, now_ms); vtx_probe_step = VTX_STEP_IDLE; return; }
+    if (ack) {
+      uint8_t ok_proto = (known != VTX_PROTO_NONE) ? known : (uint8_t)VTX_PROTO_SMARTAUDIO;
+      vtxMarkOk(ok_proto, now_ms);
+      vtx_probe_step = VTX_STEP_IDLE;
+      return;
+    }
     if ((now_ms - vtx_step_start_ms) >= VTX_PROBE_TIMEOUT_MS) vtxFinishProbeTimeout(now_ms);
     return;
   }
@@ -1533,7 +1540,7 @@ void vtxStepNonBlocking(uint32_t now_ms) {
   if ((now_ms - vtx_last_tx_ms) < VTX_CMD_INTERVAL_MS) return;
 
   if (vtx_send_freq_req || vtx_send_power_req) {
-    uint8_t p = (known != VTX_PROTO_NONE) ? known : VTX_PROTO_SMARTAUDIO;
+    uint8_t p = (known != VTX_PROTO_NONE) ? known : (uint8_t)VTX_PROTO_SMARTAUDIO;
     if (vtx_send_freq_req && vtxSendFreqCmd(p)) { vtx_send_freq_req = false; vtxArmCmdAck(now_ms); return; }
     if (vtx_send_power_req && vtxSendPowerCmd(p)) { vtx_send_power_req = false; vtxArmCmdAck(now_ms); return; }
   }
@@ -1893,19 +1900,23 @@ namespace SensorDriver {
     if (!activeSensors.baro_found || !baroCal.valid) return false;
     if (activeSensors.baro_type == BARO_MS5611) {
       uint8_t ab[3];
-      if (!writeReg(activeSensors.baro_addr, 0x48, 0x00)) return false; delay(MS5611_CONV_DELAY_MS);
+      if (!writeReg(activeSensors.baro_addr, 0x48, 0x00)) return false;
+      delay(MS5611_CONV_DELAY_MS);
       if (!readReg(activeSensors.baro_addr, 0x00, ab, 3)) return false;
       uint32_t d1 = ((uint32_t)ab[0] << 16) | ((uint32_t)ab[1] << 8) | ab[2];
-      if (!writeReg(activeSensors.baro_addr, 0x58, 0x00)) return false; delay(MS5611_CONV_DELAY_MS);
+      if (!writeReg(activeSensors.baro_addr, 0x58, 0x00)) return false;
+      delay(MS5611_CONV_DELAY_MS);
       if (!readReg(activeSensors.baro_addr, 0x00, ab, 3)) return false;
       return computeMs5611AltitudeFromRaw(d1, ((uint32_t)ab[0] << 16) | ((uint32_t)ab[1] << 8) | ab[2], alt_m);
     }
     if (activeSensors.baro_type == BARO_BMP180) {
       constexpr uint8_t oss = 1; uint8_t tb[2], pb[3];
-      if (!writeReg(activeSensors.baro_addr, 0xF4, 0x2E)) return false; delay(BMP180_TEMP_DELAY_MS);
+      if (!writeReg(activeSensors.baro_addr, 0xF4, 0x2E)) return false;
+      delay(BMP180_TEMP_DELAY_MS);
       if (!readReg(activeSensors.baro_addr, 0xF6, tb, 2)) return false;
       int32_t ut = (int32_t)((uint16_t)tb[0] << 8 | tb[1]);
-      if (!writeReg(activeSensors.baro_addr, 0xF4, (uint8_t)(0x34 + (oss << 6)))) return false; delay(BMP180_PRESS_DELAY_MS);
+      if (!writeReg(activeSensors.baro_addr, 0xF4, (uint8_t)(0x34 + (oss << 6)))) return false;
+      delay(BMP180_PRESS_DELAY_MS);
       if (!readReg(activeSensors.baro_addr, 0xF6, pb, 3)) return false;
       float p_pa = computeBmp180PressurePa(ut, (int32_t)(((((uint32_t)pb[0] << 16) | ((uint32_t)pb[1] << 8) | pb[2])) >> (8 - oss)), oss);
       if (!isPressureValidPa(p_pa)) return false;
@@ -2304,9 +2315,12 @@ void stepMagCalibrationNonBlocking(uint32_t now_ms) {
     mag_cal_last_sample_ms = now_ms;
     float mx, my, mz;
     if (SensorDriver::readMagUnified(mx, my, mz)) {
-      if (mx < mag_cal_min_x) mag_cal_min_x = mx; if (mx > mag_cal_max_x) mag_cal_max_x = mx;
-      if (my < mag_cal_min_y) mag_cal_min_y = my; if (my > mag_cal_max_y) mag_cal_max_y = my;
-      if (mz < mag_cal_min_z) mag_cal_min_z = mz; if (mz > mag_cal_max_z) mag_cal_max_z = mz;
+      if (mx < mag_cal_min_x) mag_cal_min_x = mx;
+      if (mx > mag_cal_max_x) mag_cal_max_x = mx;
+      if (my < mag_cal_min_y) mag_cal_min_y = my;
+      if (my > mag_cal_max_y) mag_cal_max_y = my;
+      if (mz < mag_cal_min_z) mag_cal_min_z = mz;
+      if (mz > mag_cal_max_z) mag_cal_max_z = mz;
     }
   }
   if ((now_ms - mag_cal_start_ms) >= MAG_CAL_DURATION_MS) {
@@ -2754,7 +2768,8 @@ static void executeCommand(const char* cmd) {
     const char* args = skipSpaces(s + 3);
     char key[48] = {0}; size_t kl = 0;
     while (args[kl] && args[kl] != ' ' && args[kl] != '\t' && args[kl] != '=') {
-      if (kl < sizeof(key) - 1) key[kl] = args[kl]; kl++;
+      if (kl < sizeof(key) - 1) key[kl] = args[kl];
+      kl++;
     }
     key[kl] = '\0';
     const char* vs = skipSpaces(args + kl);
@@ -3033,25 +3048,39 @@ void flightControlTask() {
   float hp_y = gy_dps - lpf_xy_hp_y.update(gy_dps);
   vibration_index = 0.85f * vibration_index + 0.15f * sqrtf(hp_x * hp_x + hp_y * hp_y);
 
+  float fx_g = ax_g, fy_g = ay_g, fz_g = az_g;
+  float fgx = gx_dps, fgy = gy_dps, fgz = gz_dps;
+
   if (currentConfig.flt_lpf_en) {
-    ax_g = lpf_ax.update(ax_g);
-    ay_g = lpf_ay.update(ay_g);
-    az_g = lpf_az.update(az_g);
-    gx_dps = lpf_gx.update(gx_dps);
-    gy_dps = lpf_gy.update(gy_dps);
-    gz_dps = lpf_gz.update(gz_dps);
+    fx_g = lpf_ax.update(fx_g);
+    fy_g = lpf_ay.update(fy_g);
+    fz_g = lpf_az.update(fz_g);
+    fgx = lpf_gx.update(fgx);
+    fgy = lpf_gy.update(fgy);
+    fgz = lpf_gz.update(fgz);
   }
+
   if (currentConfig.flt_not_en) {
-    gx_dps = notch_gx.update(gx_dps);
-    gy_dps = notch_gy.update(gy_dps);
-    gz_dps = notch_gz.update(gz_dps);
+    float dyn_freq = currentConfig.filter_notch_freq;
+    if (currentConfig.flt_amb_en) {
+      float amb = constrainF(currentConfig.flt_amb, 0.001f, 1.0f);
+      float amb_min = constrainF(currentConfig.flt_amb_min, 0.0005f, amb);
+      float scale = constrainF(1.0f - (vibration_index / 120.0f), amb_min / amb, 1.0f);
+      dyn_freq = constrainF(currentConfig.filter_notch_freq * scale, 40.0f, 115.0f);
+    }
+    notch_gx.setParameters(250.0f, dyn_freq, currentConfig.filter_notch_bw, false);
+    notch_gy.setParameters(250.0f, dyn_freq, currentConfig.filter_notch_bw, false);
+    notch_gz.setParameters(250.0f, dyn_freq, currentConfig.filter_notch_bw, false);
+    fgx = notch_gx.update(fgx);
+    fgy = notch_gy.update(fgy);
+    fgz = notch_gz.update(fgz);
   }
 
-  float gx_rad = gx_dps * FC_DEG_TO_RAD;
-  float gy_rad = gy_dps * FC_DEG_TO_RAD;
-  float gz_rad = gz_dps * FC_DEG_TO_RAD;
+  float gx_rad = fgx * FC_DEG_TO_RAD;
+  float gy_rad = fgy * FC_DEG_TO_RAD;
+  float gz_rad = fgz * FC_DEG_TO_RAD;
 
-  madgwickUpdateIMU(gx_rad, gy_rad, gz_rad, ax_g, ay_g, az_g, DT);
+  madgwickUpdateIMU(gx_rad, gy_rad, gz_rad, fx_g, fy_g, fz_g, DT);
 
   float q0 = orientation.q0, q1 = orientation.q1, q2 = orientation.q2, q3 = orientation.q3;
   float roll_deg = atan2f(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2)) * FC_RAD_TO_DEG;
@@ -3070,113 +3099,118 @@ void flightControlTask() {
     return;
   }
 
+  handleMotorArmStateAndEepromError();
+
   if (!is_armed) {
     arm_ramp_factor = 0.0f;
     setMotorsPower(0.0f, 0.0f, 0.0f, 0.0f);
     return;
   }
 
-  arm_ramp_factor = constrainF(arm_ramp_factor + (DT / 0.35f), 0.0f, 1.0f);
-
-  float thr_norm = constrainF(smooth_throttle / 1000.0f, 0.0f, 1.0f);
-  float roll_in = (smooth_roll - STICK_CENTER) / STICK_CENTER;
-  float pitch_in = (smooth_pitch - STICK_CENTER) / STICK_CENTER;
-  float yaw_in = (smooth_yaw - STICK_CENTER) / STICK_CENTER;
-
-  if (fabsf(roll_in) * STICK_CENTER < currentConfig.rc_deadband) roll_in = 0.0f;
-  if (fabsf(pitch_in) * STICK_CENTER < currentConfig.rc_deadband) pitch_in = 0.0f;
-  if (fabsf(yaw_in) * STICK_CENTER < currentConfig.rc_deadband) yaw_in = 0.0f;
-
-  float target_gx_rad = 0.0f, target_gy_rad = 0.0f;
-  if (currentConfig.fm_mode == 0) {
-    target_gx_rad = calculateSuperExpoRate(roll_in, currentConfig.rc_rate, currentConfig.rc_super_expo, currentConfig.rc_stick_expo) * MAX_RATE_DPS_PER_UNIT * FC_DEG_TO_RAD;
-    target_gy_rad = calculateSuperExpoRate(pitch_in, currentConfig.rc_rate, currentConfig.rc_super_expo, currentConfig.rc_stick_expo) * MAX_RATE_DPS_PER_UNIT * FC_DEG_TO_RAD;
-  } else {
-    float des_roll = constrainF(roll_in * currentConfig.fm_roll_max, -currentConfig.fm_roll_max, currentConfig.fm_roll_max);
-    float des_pitch = constrainF(pitch_in * currentConfig.fm_pitch_max, -currentConfig.fm_pitch_max, currentConfig.fm_pitch_max);
-    target_gx_rad = constrainF((des_roll - roll_deg) * 3.0f * FC_DEG_TO_RAD, -3.5f, 3.5f);
-    target_gy_rad = constrainF((des_pitch - pitch_deg) * 3.0f * FC_DEG_TO_RAD, -3.5f, 3.5f);
+  if (arm_ramp_factor < 1.0f) {
+    arm_ramp_factor = constrainF(arm_ramp_factor + (DT / 0.40f), 0.0f, 1.0f);
   }
-  float target_gz_rad = calculateSuperExpoRate(yaw_in, currentConfig.rc_yaw_rate, currentConfig.rc_yaw_super_expo, currentConfig.rc_yaw_expo) * MAX_RATE_DPS_PER_UNIT * FC_DEG_TO_RAD;
 
-  float base_thr = thr_norm * 850.0f * getBatteryCompensationFactor();
-  if (is_failsafe) {
-    float des_vz = -fabsf(currentConfig.fs_vz_speed);
-    base_thr = constrainF(base_hover_throttle + vzPID.update(des_vz - current_vz, current_vz, DT), 50.0f, 750.0f);
-    target_gx_rad = target_gy_rad = target_gz_rad = 0.0f;
+  float r_norm = (smooth_roll - STICK_CENTER) / STICK_CENTER;
+  float p_norm = (smooth_pitch - STICK_CENTER) / STICK_CENTER;
+  float y_norm = (smooth_yaw - STICK_CENTER) / STICK_CENTER;
+
+  float db = currentConfig.rc_deadband / STICK_CENTER;
+  if (fabsf(r_norm) < db) r_norm = 0.0f;
+  if (fabsf(p_norm) < db) p_norm = 0.0f;
+  if (fabsf(y_norm) < db) y_norm = 0.0f;
+
+  float target_gx_rad = calculateSuperExpoRate(r_norm, currentConfig.rc_rate, currentConfig.rc_super_expo, currentConfig.rc_stick_expo) * MAX_RATE_DPS_PER_UNIT * FC_DEG_TO_RAD;
+  float target_gy_rad = calculateSuperExpoRate(p_norm, currentConfig.rc_rate, currentConfig.rc_super_expo, currentConfig.rc_stick_expo) * MAX_RATE_DPS_PER_UNIT * FC_DEG_TO_RAD;
+  float target_gz_rad = calculateSuperExpoRate(y_norm, currentConfig.rc_yaw_rate, currentConfig.rc_yaw_super_expo, currentConfig.rc_yaw_expo) * MAX_RATE_DPS_PER_UNIT * FC_DEG_TO_RAD;
+
+  if (currentConfig.fm_mode == 1 || currentConfig.fm_mode == 2) {
+    float stick_mag = fmaxf(fabsf(r_norm), fabsf(p_norm));
+    float angle_weight = 1.0f;
+    if (currentConfig.fm_mode == 2 && currentConfig.rc_horizon_transition > 0.05f) {
+      angle_weight = constrainF(1.0f - (stick_mag / currentConfig.rc_horizon_transition), 0.0f, 1.0f);
+    }
+    float cmd_roll_deg = -r_norm * currentConfig.fm_roll_max;
+    float cmd_pitch_deg = -p_norm * currentConfig.fm_pitch_max;
+    float angle_gx_rad = (cmd_roll_deg - roll_deg) * 2.5f * FC_DEG_TO_RAD;
+    float angle_gy_rad = (cmd_pitch_deg - pitch_deg) * 2.5f * FC_DEG_TO_RAD;
+    target_gx_rad = angle_weight * angle_gx_rad + (1.0f - angle_weight) * target_gx_rad;
+    target_gy_rad = angle_weight * angle_gy_rad + (1.0f - angle_weight) * target_gy_rad;
   }
+
+  float thr = is_failsafe ? 0.0f : constrainF(smooth_throttle, 0.0f, OUTPUT_MAX);
+  if (is_failsafe && currentConfig.fs_rtx_en) {
+    float vz_err = (-currentConfig.fs_vz_speed) - baro_vz_mps;
+    thr = constrainF(base_hover_throttle + vzPID.update(vz_err, baro_vz_mps, DT), 0.0f, 650.0f);
+  }
+
+  thr *= getBatteryCompensationFactor() * arm_ramp_factor;
 
   float rc = rollRatePID.update(target_gx_rad - gx_rad, gx_rad, DT);
   float pc = pitchRatePID.update(target_gy_rad - gy_rad, gy_rad, DT);
   float yc = yawRatePID.update(target_gz_rad - gz_rad, gz_rad, DT);
 
-  m1 = (base_thr + pc + rc - yc) * arm_ramp_factor;
-  m2 = (base_thr + pc - rc + yc) * arm_ramp_factor;
-  m3 = (base_thr - pc - rc - yc) * arm_ramp_factor;
-  m4 = (base_thr - pc + rc + yc) * arm_ramp_factor;
+  m1 = thr + pc + rc - yc;
+  m2 = thr + pc - rc + yc;
+  m3 = thr - pc - rc - yc;
+  m4 = thr - pc + rc + yc;
 
   setMotorsPower(m1, m2, m3, m4);
 }
 
 // ==============================================================================
-// 12. ИНИЦИАЛИЗАЦИЯ И ОСНОВНОЙ ЦИКЛ
+// 12. ИНИЦИАЛИЗАЦИЯ И ГЛАВНЫЙ ЦИКЛ
 // ==============================================================================
 static void enablePeripheralClocks() {
   Reg::RCC->APB2ENR |= (1U << 0) | (1U << 2) | (1U << 3) | (1U << 9) | (1U << 14);
   Reg::RCC->APB1ENR |= (1U << 0) | (1U << 14) | (1U << 18) | (1U << 21);
 }
 
-int main() {
+int main(void) {
   enablePeripheralClocks();
   uart1.begin(SERIAL_BAUD_RATE);
-  initAdc1();
   initI2c1();
-  CliAutoCal::init();
-
+  initAdc1();
   loadSettings();
   setupHardwareTimers();
   applyFilterConfig();
+  CliAutoCal::init();
   SensorDriver::autoDetectAll();
   vtxInit();
-
   if (currentConfig.rtx_en) {
     rtx_init_hardware();
     main_rtx_chan = active_rtx_chan = (uint8_t)constrainI(currentConfig.rtx_pri_chan, 0, 99);
     is_on_backup = false;
     applyRtxConfiguration(false);
   }
+  uart1.println("OK: boot");
 
   uint32_t last_loop_us = micros();
-
-  for (;;) {
+  while (true) {
     uint32_t now_us = micros();
     if ((now_us - last_loop_us) >= LOOP_INTERVAL_US) {
-      last_loop_us += LOOP_INTERVAL_US;
-      if ((micros() - last_loop_us) > LOOP_INTERVAL_US) last_loop_us = micros();
+      uint32_t loop_start = now_us;
+      last_loop_us = now_us - ((now_us - last_loop_us) % LOOP_INTERVAL_US);
 
-      uint32_t exec_start_us = micros();
-      uint32_t now_ms = millis();
-
-      handleMotorArmStateAndEepromError();
       flightControlTask();
-      updateAuxSensorsNonBlocking(now_ms);
+
+      uint32_t now_ms = millis();
       CliAutoCal::pollButton(now_ms);
+      updateAuxSensorsNonBlocking(now_ms);
       stepMagCalibrationNonBlocking(now_ms);
+      serviceError202Event(now_ms);
       vtxStepNonBlocking(now_ms);
       stepChannelScanNonBlocking();
-      readRx();
       pollTelemetryTxState();
-      if (send_telemetry_pending || hasQueuedRtxResponse()) startTelemetryNonBlocking();
-      serviceError202Event(now_ms);
+      if (!rtx_tx_in_flight && !rtx_scan_active && currentConfig.rtx_en) readRx();
+      if (!rtx_tx_in_flight && !rtx_scan_active && send_telemetry_pending && currentConfig.rtx_en) startTelemetryNonBlocking();
       parseCli();
       stepMonitorStreamNonBlocking(now_ms);
 
-      uint32_t exec_us = micros() - exec_start_us;
-      cpu_load_pct = ((float)exec_us / (float)LOOP_INTERVAL_US) * 100.0f;
+      uint32_t exec_us = micros() - loop_start;
+      cpu_load_pct = constrainF(((float)exec_us / (float)LOOP_INTERVAL_US) * 100.0f, 0.0f, 100.0f);
       if (cpu_load_pct > cpu_max_load_pct) cpu_max_load_pct = cpu_load_pct;
-      if (exec_us > (LOOP_INTERVAL_US + LOOP_OVERRUN_MARGIN_US)) {
-        setFcErrorRam(FC_ERR_LOOP_OVERRUN);
-      }
+      if (exec_us > (LOOP_INTERVAL_US + LOOP_OVERRUN_MARGIN_US)) setFcErrorRam(FC_ERR_LOOP_OVERRUN);
     }
   }
 }
