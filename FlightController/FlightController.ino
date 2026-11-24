@@ -360,8 +360,7 @@ namespace CliAutoCal {
 FlightConfig currentConfig;
 Quaternion orientation;
 
-HardwareSerial vtxSerial(VTX_RX_PIN, VTX_TX_PIN);
-HardwareSerial Serial1(SERIAL1_RX_PIN, SERIAL1_TX_PIN);
+Uart vtxSerial(VTX_RX_PIN, VTX_TX_PIN);
 SPIClass rtxSpi(RTX_MOSI_PIN, RTX_MISO_PIN, RTX_SCK_PIN);
 SPISettings rtxSpiSettings(8000000, MSBFIRST, SPI_MODE0);
 
@@ -1014,7 +1013,7 @@ static inline uint8_t vtxEncodeSaDirectDbm(uint16_t mw) {
   return (uint8_t)(0x80 | (vtxMwToDbmInt(mw) & 0x7F));
 }
 
-static void vtxEnsureBaud(HardwareSerial* ser, uint32_t baud) {
+static void vtxEnsureBaud(Uart* ser, uint32_t baud) {
   if (!ser) return;
   if (!vtx_uart_ready || vtx_baud != baud) {
     if (vtx_uart_ready) { ser->flush(); ser->end(); }
@@ -1050,7 +1049,7 @@ static uint8_t vtxResolveProto() {
   return vtx_detected_proto;
 }
 
-static bool pollSmartAudioRx(HardwareSerial* ser) {
+static bool pollSmartAudioRx(Uart* ser) {
   bool seen = false;
   while (ser->available() > 0) {
     uint8_t b = (uint8_t)ser->read();
@@ -1078,7 +1077,7 @@ static bool pollSmartAudioRx(HardwareSerial* ser) {
   return seen;
 }
 
-static bool pollTrampRx(HardwareSerial* ser) {
+static bool pollTrampRx(Uart* ser) {
   bool seen = false;
   while (ser->available() > 0) {
     uint8_t b = (uint8_t)ser->read();
@@ -1101,7 +1100,7 @@ static bool pollTrampRx(HardwareSerial* ser) {
 }
 
 static bool sendSmartAudioFrame(uint8_t cmd, const uint8_t *pl, uint8_t plen) {
-  HardwareSerial* ser = &vtxSerial;
+  Uart* ser = &vtxSerial;
   if (vtx_hw_unavailable) { setFcErrorRam(FC_ERR_SA_VTX_FAIL); return false; }
   vtxEnsureBaud(ser, SMARTAUDIO_BAUD_RATE);
   sa_rx_idx = 0; while (ser->available() > 0) (void)ser->read();
@@ -1114,7 +1113,7 @@ static bool sendSmartAudioFrame(uint8_t cmd, const uint8_t *pl, uint8_t plen) {
 }
 
 static bool sendTrampFrame(char cmd, uint16_t param) {
-  HardwareSerial* ser = &vtxSerial;
+  Uart* ser = &vtxSerial;
   if (vtx_hw_unavailable) { setFcErrorRam(FC_ERR_SA_VTX_FAIL); return false; }
   vtxEnsureBaud(ser, TRAMP_BAUD_RATE);
   tramp_rx_idx = 0; while (ser->available() > 0) (void)ser->read();
@@ -1184,7 +1183,7 @@ void vtxInit() {
     vtx_uart_ready = vtx_send_freq_req = vtx_send_power_req = false;
     return;
   }
-  HardwareSerial* ser = &vtxSerial;
+  Uart* ser = &vtxSerial;
   uint8_t proto = vtxResolveProto();
   vtxEnsureBaud(ser, (proto == VTX_PROTO_TRAMP) ? TRAMP_BAUD_RATE : SMARTAUDIO_BAUD_RATE);
   vtx_send_freq_req = vtx_send_power_req = true;
@@ -1199,7 +1198,7 @@ void vtxStepNonBlocking(uint32_t now_ms) {
   if (!currentConfig.vtx_en) { vtx_link_ok = false; vtx_probe_step = VTX_STEP_IDLE; return; }
   if (vtx_hw_unavailable) { setFcErrorRam(FC_ERR_SA_VTX_FAIL); return; }
   if (!vtx_uart_ready) { vtxInit(); if (!vtx_uart_ready) return; }
-  HardwareSerial* ser = &vtxSerial;
+  Uart* ser = &vtxSerial;
 
   uint8_t known = vtxResolveProto();
   bool auto_fb = (currentConfig.vtx_prot == VTX_PROT_AUTO) && (known == VTX_PROTO_NONE);
@@ -2845,6 +2844,8 @@ void flightControlTask() {
 // ==============================================================================
 void setup() {
   Serial.begin(SERIAL_BAUD_RATE);
+  Serial1.setRx(SERIAL1_RX_PIN);
+  Serial1.setTx(SERIAL1_TX_PIN);
   Serial1.begin(SERIAL1_BAUD_RATE);
   delay(POWER_ON_SETTLE_MS);
 
@@ -2859,51 +2860,45 @@ void setup() {
 
   Wire.setSCL(PB6); Wire.setSDA(PB7); Wire.begin(); Wire.setClock(400000);
   SensorDriver::autoDetectAll();
-
-  main_rtx_chan = active_rtx_chan = constrain(currentConfig.rtx_pri_chan, 0, 99);
-  is_on_backup = false;
-  rtx_init_hardware();
-  if (currentConfig.rtx_en) applyRtxConfiguration(false);
-
-  vtxInit();
   CliAutoCal::init();
+
+  if (currentConfig.rtx_en) { rtx_init_hardware(); applyRtxConfiguration(false); }
+  vtxInit();
+  readBatteryAndCurrent();
 }
 
 void loop() {
-  static uint32_t last_loop_us = 0;
+  static uint32_t prev_loop_us = micros(), max_exec_us = 0;
   uint32_t now_us = micros();
-  if (last_loop_us == 0) last_loop_us = now_us;
-
-  if ((now_us - last_loop_us) >= LOOP_INTERVAL_US) {
-    last_loop_us += LOOP_INTERVAL_US;
-    if ((micros() - last_loop_us) >= LOOP_INTERVAL_US) last_loop_us = micros();
-
-    uint32_t task_start_us = micros();
-    handleMotorArmStateAndEepromError();
+  if ((now_us - prev_loop_us) >= LOOP_INTERVAL_US) {
+    prev_loop_us = now_us;
+    uint32_t t0 = micros();
     flightControlTask();
-    uint32_t elapsed_us = micros() - task_start_us;
-
-    float load_pct = ((float)elapsed_us / (float)LOOP_INTERVAL_US) * 100.0f;
-    if (isfinite(load_pct)) {
-      cpu_load_pct = 0.2f * load_pct + 0.8f * cpu_load_pct;
-      if (load_pct > cpu_max_load_pct) cpu_max_load_pct = load_pct;
-    }
-    if (elapsed_us > (LOOP_INTERVAL_US + LOOP_OVERRUN_MARGIN_US)) setFcErrorRam(FC_ERR_LOOP_OVERRUN);
+    uint32_t ex = micros() - t0;
+    if (ex > max_exec_us) max_exec_us = ex;
+    cpu_load_pct = constrain(((float)ex / (float)LOOP_INTERVAL_US) * 100.0f, 0.0f, 100.0f);
+    cpu_max_load_pct = constrain(((float)max_exec_us / (float)LOOP_INTERVAL_US) * 100.0f, 0.0f, 100.0f);
+    if (ex > (LOOP_INTERVAL_US + LOOP_OVERRUN_MARGIN_US)) setFcErrorRam(FC_ERR_LOOP_OVERRUN);
   }
 
   uint32_t now_ms = millis();
+  handleMotorArmStateAndEepromError();
   parseCli();
   CliAutoCal::pollButton(now_ms);
-  stepMagCalibrationNonBlocking(now_ms);
-  stepMonitorStreamNonBlocking(now_ms);
-  serviceError202Event(now_ms);
   updateAuxSensorsNonBlocking(now_ms);
-  vtxStepNonBlocking(now_ms);
-  pollTelemetryTxState();
-  stepChannelScanNonBlocking();
+  stepMagCalibrationNonBlocking(now_ms);
+  serviceError202Event(now_ms);
 
-  if (send_telemetry_pending && !rtx_tx_in_flight && !rtx_scan_active && !rtx_recovering) {
-    startTelemetryNonBlocking();
+  if (currentConfig.rtx_en) {
+    checkRtxBusAndRecover();
+    pollTelemetryTxState();
+    stepChannelScanNonBlocking();
+    readRx();
+    if (!rtx_tx_in_flight && !rtx_scan_active && (send_telemetry_pending || hasQueuedRtxResponse())) {
+      startTelemetryNonBlocking();
+    }
   }
-  readRx();
+
+  vtxStepNonBlocking(now_ms);
+  stepMonitorStreamNonBlocking(now_ms);
 }
