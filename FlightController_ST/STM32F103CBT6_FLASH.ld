@@ -1,6 +1,6 @@
 ENTRY(Reset_Handler)
 
-_estack = 0x20005000; /* 20 KB SRAM: 0x20000000 + 20K */
+_estack = 0x20005000;
 _Min_Heap_Size = 0x200;
 _Min_Stack_Size = 0x600;
 
@@ -41,11 +41,39 @@ SECTIONS
     . = ALIGN(4);
   } >FLASH
 
-  .ARM.extab : { *(.ARM.extab* .gnu.linkonce.armextab.*) } >FLASH
-  .ARM : {
+  .ARM.extab :
+  {
+    *(.ARM.extab* .gnu.linkonce.armextab.*)
+  } >FLASH
+
+  .ARM :
+  {
     __exidx_start = .;
     *(.ARM.exidx*)
     __exidx_end = .;
+  } >FLASH
+
+  .preinit_array :
+  {
+    PROVIDE_HIDDEN (__preinit_array_start = .);
+    KEEP (*(.preinit_array*))
+    PROVIDE_HIDDEN (__preinit_array_end = .);
+  } >FLASH
+
+  .init_array :
+  {
+    PROVIDE_HIDDEN (__init_array_start = .);
+    KEEP (*(SORT(.init_array.*)))
+    KEEP (*(.init_array*))
+    PROVIDE_HIDDEN (__init_array_end = .);
+  } >FLASH
+
+  .fini_array :
+  {
+    PROVIDE_HIDDEN (__fini_array_start = .);
+    KEEP (*(SORT(.fini_array.*)))
+    KEEP (*(.fini_array*))
+    PROVIDE_HIDDEN (__fini_array_end = .);
   } >FLASH
 
   _sidata = LOADADDR(.data);
@@ -85,9 +113,9 @@ SECTIONS
 
   /DISCARD/ :
   {
-    libc.a (*)
-    libm.a (*)
-    libgcc.a (*)
+    *(.note.GNU-stack)
+    *(.gnu_debuglink)
+    *(.gnu.lto_*)
   }
 
   .ARM.attributes 0 : { *(.ARM.attributes) }
