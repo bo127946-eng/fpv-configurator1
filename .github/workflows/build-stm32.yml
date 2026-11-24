@@ -1,4 +1,4 @@
-name: Build STM32F103CBT6 (ST / arm-none-eabi)
+name: Build STM32F103CBT6 (ST HEX & BIN)
 
 on:
   push:
@@ -18,15 +18,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi libnewlib-arm-none-eabi make
 
-      - name: Compile FlightController with arm-none-eabi-gcc
+      - name: Compile FlightController (HEX and BIN)
         run: |
           make -C FlightController_ST clean
           make -C FlightController_ST -j$(nproc)
           ls -la FlightController_ST/build
 
-      - name: Upload HEX firmware artifact
+      - name: Upload HEX and BIN firmware artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: FlightController-ST-HEX
-          path: FlightController_ST/build/*.hex
+          name: FlightController-ST-HEX-BIN
+          path: |
+            FlightController_ST/build/*.hex
+            FlightController_ST/build/*.bin
           if-no-files-found: error
