@@ -1,0 +1,50 @@
+name: Build STM32 Arduino HEX
+
+on:
+  push:
+    branches: [ "**" ]
+    paths-ignore:
+      - "build/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Arduino CLI and STM32 Core
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR=/usr/local/bin sh
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://github.com/stm32duino/BoardManagerFiles/raw/main/package_stmicroelectronics_index.json
+          arduino-cli core update-index
+          arduino-cli core install STMicroelectronics:stm32
+
+      - name: Compile Sketch to HEX
+        run: |
+          mkdir -p build
+          arduino-cli compile \
+            --fqbn STMicroelectronics:stm32:GenF1:pnum=BLUEPILL_F103C8,usb=CDCgen,xserial=generic,opt=osstd \
+            --output-dir build \
+            FlightController
+
+      - name: Upload HEX Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlightController-STM32F103C8-HEX
+          path: build/*.hex
+
+      - name: Commit HEX to Repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add build/*.hex
+          if ! git diff --cached --quiet; then
+            git commit -m "Build firmware HEX [skip ci]"
+            git push
+          fi
