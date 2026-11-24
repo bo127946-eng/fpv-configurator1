@@ -25,10 +25,20 @@ jobs:
           arduino-cli core update-index
           arduino-cli core install STMicroelectronics:stm32
 
-      - name: Compile FlightController for STM32F103CB (128K Flash)
+      - name: Compile FlightController and place HEX in build
         run: |
+          mkdir -p build
           arduino-cli compile \
             --fqbn STMicroelectronics:stm32:GenF1:pnum=BLUEPILL_F103CB \
             --export-binaries \
+            --output-dir build \
             --warnings all \
             FlightController
+          ls -la build
+
+      - name: Upload HEX firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlightController-HEX
+          path: build/*.hex
+          if-no-files-found: error
