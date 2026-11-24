@@ -213,6 +213,7 @@ static void delay(uint32_t ms) {
 }
 
 static inline float constrainF(float v, float lo, float hi) {
+  if (!isfinite(v)) return lo;
   if (v < lo) return lo;
   if (v > hi) return hi;
   return v;
@@ -511,6 +512,41 @@ constexpr uint32_t FAILSAFE_TIMEOUT_MS = 1000;
 constexpr uint8_t I2C_MAX_ERRORS = 10;
 constexpr uint8_t RTX_MAX_ERRORS = 10;
 
+// Безопасные лимиты параметров конфигурации (единый источник истины)
+constexpr float CFG_ANGLE_MAX_DEG = 85.0f;
+constexpr float CFG_VZ_MAX_MPS = 10.0f;
+constexpr float CFG_RATE_MAX = 2.5f;
+constexpr float CFG_EXPO_MAX = 1.0f;
+constexpr float CFG_DEADBAND_MAX = 200.0f;
+constexpr float CFG_ALPHA_MIN = 0.001f;
+constexpr float CFG_ALPHA_MAX = 1.0f;
+constexpr float CFG_NOTCH_FREQ_MIN = 20.0f;
+constexpr float CFG_NOTCH_FREQ_MAX = 120.0f;
+constexpr float CFG_NOTCH_BW_MIN = 1.0f;
+constexpr float CFG_NOTCH_BW_MAX = 100.0f;
+constexpr float CFG_ESC_LIMIT_MIN = 1.0f;
+constexpr float CFG_ESC_LIMIT_MAX = 250.0f;
+constexpr float CFG_BAT_V_MAX_MIN = 7.0f;
+constexpr float CFG_BAT_V_MAX_MAX = 25.2f;
+constexpr float CFG_BAT_FS_V_MIN = 5.0f;
+constexpr float CFG_BAT_FS_V_MAX = 25.0f;
+constexpr float CFG_BAT_SCALE_V_MIN = 0.1f;
+constexpr float CFG_BAT_SCALE_V_MAX = 50.0f;
+constexpr float CFG_BAT_OFFSET_A_MIN = -200.0f;
+constexpr float CFG_BAT_OFFSET_A_MAX = 200.0f;
+constexpr float CFG_BAT_SCALE_A_MIN = 0.05f;
+constexpr float CFG_BAT_SCALE_A_MAX = 20.0f;
+constexpr float CFG_LIDAR_OFFSET_MIN = -5.0f;
+constexpr float CFG_LIDAR_OFFSET_MAX = 5.0f;
+constexpr float CFG_MAG_BIAS_MIN = -2000.0f;
+constexpr float CFG_MAG_BIAS_MAX = 2000.0f;
+constexpr float CFG_RATE_KP_MAX = 10.0f;
+constexpr float CFG_RATE_KI_MAX = 5.0f;
+constexpr float CFG_RATE_KD_MAX = 1.0f;
+constexpr float CFG_VZ_KP_MAX = 50.0f;
+constexpr float CFG_VZ_KI_MAX = 20.0f;
+constexpr float CFG_VZ_KD_MAX = 10.0f;
+
 enum FcErrorCode : uint8_t {
   FC_ERR_NONE = 0, FC_ERR_LOOP_OVERRUN = 1, FC_ERR_IMU_FAIL = 2, FC_ERR_I2C_BUS = 3,
   FC_ERR_SPI_RTX = 4, FC_ERR_RC_LOSS = 5, FC_ERR_BAT_LOW = 6, FC_ERR_TILT_DISARM = 7,
@@ -528,13 +564,7 @@ enum DelayedRtxRespType : uint8_t {
   RTX_RESP_240_CHAN_SW = 240, RTX_RESP_250_VTX_ACK = 250
 };
 enum BenchTestMode : uint8_t { BENCH_TEST_NONE = 0, BENCH_TEST_MOTORS = 1, BENCH_TEST_PID = 2 };
-enum CliValType : uint8_t { CLI_U8 = 0, CLI_I8 = 1, CLI_U16 = 2, CLI_F32 = 3 };
-enum CliHook : uint8_t {
-  HOOK_NONE = 0, HOOK_DSP_PID, HOOK_RTX, HOOK_IMU, HOOK_BARO, HOOK_MAG, HOOK_LIDAR,
-  HOOK_VTX_EN, HOOK_VTX_PROT, HOOK_VTX_MHZ, HOOK_VTX_MW
-};
 
-struct CliParam { const char* name; void* ptr; CliValType type; CliHook hook; int min_v; int max_v; };
 struct DelayedRtxRespItem { DelayedRtxRespType type = RTX_RESP_NONE; uint16_t vtx_mhz = 0; uint8_t tier = 0; uint16_t vtx_mw = 0; };
 struct PIDConfig { float kp, ki, kd; };
 
@@ -585,7 +615,8 @@ struct LowPassFilter {
   void reset(float v = 0.0f) { output = v; }
   float update(float in) {
     if (!isfinite(in)) return output;
-    output = alpha * in + (1.0f - alpha) * output;
+    float a = constrainF(alpha, CFG_ALPHA_MIN, CFG_ALPHA_MAX);
+    output = a * in + (1.0f - a) * output;
     return isfinite(output) ? output : 0.0f;
   }
 };
@@ -621,12 +652,13 @@ struct AdaptiveLidarFilter {
   void reset() { output = h[0] = h[1] = h[2] = 0.0f; init_ok = false; }
   float update(float raw_v, float alpha) {
     if (!isfinite(raw_v)) return output;
+    float a = constrainF(alpha, CFG_ALPHA_MIN, CFG_ALPHA_MAX);
     if (!init_ok) { output = h[0] = h[1] = h[2] = raw_v; init_ok = true; return output; }
     h[0] = h[1]; h[1] = h[2]; h[2] = raw_v;
     float med = h[1];
     if ((h[0] >= h[1] && h[0] <= h[2]) || (h[0] <= h[1] && h[0] >= h[2])) med = h[0];
     else if ((h[2] >= h[0] && h[2] <= h[1]) || (h[2] <= h[0] && h[2] >= h[1])) med = h[2];
-    output = alpha * med + (1.0f - alpha) * output;
+    output = a * med + (1.0f - a) * output;
     return isfinite(output) ? output : raw_v;
   }
 };
@@ -728,6 +760,7 @@ uint32_t last_lidar_packet_ms = 0;
 
 void loadSettings();
 void saveSettings();
+void sanitizeConfig();
 void resetToFactoryDefaults();
 void applyFilterConfig();
 void updatePidTunings();
@@ -803,8 +836,103 @@ static void flashWriteHalfWord(uint32_t addr, uint16_t data) {
 }
 
 static inline float roundToTenthVolt(float v) { return (float)lroundf(v * 10.0f) * 0.1f; }
-static inline float getEffectiveEscDeltaLimit() { return isfinite(currentConfig.flt_esc_limit) ? constrainF(currentConfig.flt_esc_limit, 1.0f, 100.0f) : 45.0f; }
-static inline float getEffectiveBatVMax() { return isfinite(currentConfig.bat_v_max) ? roundToTenthVolt(constrainF(currentConfig.bat_v_max, 7.0f, 25.0f)) : 16.8f; }
+static inline float getEffectiveEscDeltaLimit() {
+  return constrainF(currentConfig.flt_esc_limit, CFG_ESC_LIMIT_MIN, CFG_ESC_LIMIT_MAX);
+}
+static inline float getEffectiveBatVMax() {
+  return roundToTenthVolt(constrainF(currentConfig.bat_v_max, CFG_BAT_V_MAX_MIN, CFG_BAT_V_MAX_MAX));
+}
+
+void sanitizeConfig() {
+  currentConfig.fm_mode = (uint8_t)constrainI(currentConfig.fm_mode, 0, 3);
+  currentConfig.fm_roll_max = constrainF(currentConfig.fm_roll_max, 1.0f, CFG_ANGLE_MAX_DEG);
+  currentConfig.fm_pitch_max = constrainF(currentConfig.fm_pitch_max, 1.0f, CFG_ANGLE_MAX_DEG);
+  currentConfig.fm_vz_speed_max = constrainF(currentConfig.fm_vz_speed_max, 0.1f, CFG_VZ_MAX_MPS);
+
+  currentConfig.rc_rate = constrainF(currentConfig.rc_rate, 0.01f, CFG_RATE_MAX);
+  currentConfig.rc_super_expo = constrainF(currentConfig.rc_super_expo, 0.0f, CFG_EXPO_MAX);
+  currentConfig.rc_stick_expo = constrainF(currentConfig.rc_stick_expo, 0.0f, CFG_EXPO_MAX);
+  currentConfig.rc_yaw_rate = constrainF(currentConfig.rc_yaw_rate, 0.01f, CFG_RATE_MAX);
+  currentConfig.rc_yaw_super_expo = constrainF(currentConfig.rc_yaw_super_expo, 0.0f, CFG_EXPO_MAX);
+  currentConfig.rc_yaw_expo = constrainF(currentConfig.rc_yaw_expo, 0.0f, CFG_EXPO_MAX);
+  currentConfig.rc_deadband = constrainF(currentConfig.rc_deadband, 0.0f, CFG_DEADBAND_MAX);
+  currentConfig.rc_horizon_transition = constrainF(currentConfig.rc_horizon_transition, 0.05f, 1.0f);
+  currentConfig.rc_filter_smoothing = constrainF(currentConfig.rc_filter_smoothing, CFG_ALPHA_MIN, CFG_ALPHA_MAX);
+
+  currentConfig.esc_prot = (uint8_t)constrainI(currentConfig.esc_prot, 0, 1);
+  currentConfig.flt_esc_limit = getEffectiveEscDeltaLimit();
+  currentConfig.flt_lpf_en = (uint8_t)constrainI(currentConfig.flt_lpf_en, 0, 1);
+  currentConfig.flt_not_en = (uint8_t)constrainI(currentConfig.flt_not_en, 0, 1);
+  currentConfig.flt_amb_en = (uint8_t)constrainI(currentConfig.flt_amb_en, 0, 1);
+  currentConfig.gyro_filter_alpha = constrainF(currentConfig.gyro_filter_alpha, CFG_ALPHA_MIN, CFG_ALPHA_MAX);
+  currentConfig.acc_filter_alpha = constrainF(currentConfig.acc_filter_alpha, CFG_ALPHA_MIN, CFG_ALPHA_MAX);
+  currentConfig.filter_notch_freq = constrainF(currentConfig.filter_notch_freq, CFG_NOTCH_FREQ_MIN, CFG_NOTCH_FREQ_MAX);
+  currentConfig.filter_notch_bw = constrainF(currentConfig.filter_notch_bw, CFG_NOTCH_BW_MIN, CFG_NOTCH_BW_MAX);
+  currentConfig.flt_amb = constrainF(currentConfig.flt_amb, CFG_ALPHA_MIN, CFG_ALPHA_MAX);
+  currentConfig.flt_amb_min = constrainF(currentConfig.flt_amb_min, 0.0005f, currentConfig.flt_amb);
+
+  currentConfig.imu_id = (uint8_t)constrainI(currentConfig.imu_id, 0, 6);
+  currentConfig.imu_align = (uint8_t)constrainI(currentConfig.imu_align, 0, 3);
+  currentConfig.baro_en = (uint8_t)constrainI(currentConfig.baro_en, 0, 1);
+  currentConfig.bar_id = (uint8_t)constrainI(currentConfig.bar_id, 0, 7);
+  currentConfig.com_en = (uint8_t)constrainI(currentConfig.com_en, 0, 1);
+  currentConfig.com_id = (uint8_t)constrainI(currentConfig.com_id, 0, 6);
+  currentConfig.com_align = (uint8_t)constrainI(currentConfig.com_align, 0, 3);
+  currentConfig.mag_bias_x = constrainF(currentConfig.mag_bias_x, CFG_MAG_BIAS_MIN, CFG_MAG_BIAS_MAX);
+  currentConfig.mag_bias_y = constrainF(currentConfig.mag_bias_y, CFG_MAG_BIAS_MIN, CFG_MAG_BIAS_MAX);
+  currentConfig.mag_bias_z = constrainF(currentConfig.mag_bias_z, CFG_MAG_BIAS_MIN, CFG_MAG_BIAS_MAX);
+  currentConfig.lidar_en = (uint8_t)constrainI(currentConfig.lidar_en, 0, 1);
+  currentConfig.lid_id = (uint8_t)constrainI(currentConfig.lid_id, 0, 4);
+  currentConfig.lidar_filter_alpha = constrainF(currentConfig.lidar_filter_alpha, CFG_ALPHA_MIN, CFG_ALPHA_MAX);
+  currentConfig.lidar_offset_m = constrainF(currentConfig.lidar_offset_m, CFG_LIDAR_OFFSET_MIN, CFG_LIDAR_OFFSET_MAX);
+
+  currentConfig.bat_scale_v = constrainF(currentConfig.bat_scale_v, CFG_BAT_SCALE_V_MIN, CFG_BAT_SCALE_V_MAX);
+  currentConfig.bat_v_max = getEffectiveBatVMax();
+  currentConfig.bat_comp_en = (uint8_t)constrainI(currentConfig.bat_comp_en, 0, 1);
+  currentConfig.bat_filter_alpha = constrainF(currentConfig.bat_filter_alpha, CFG_ALPHA_MIN, CFG_ALPHA_MAX);
+  currentConfig.bat_offset_a = constrainF(currentConfig.bat_offset_a, CFG_BAT_OFFSET_A_MIN, CFG_BAT_OFFSET_A_MAX);
+  currentConfig.bat_scale_a = constrainF(currentConfig.bat_scale_a, CFG_BAT_SCALE_A_MIN, CFG_BAT_SCALE_A_MAX);
+  currentConfig.bat_fs_v = constrainF(currentConfig.bat_fs_v, CFG_BAT_FS_V_MIN, CFG_BAT_FS_V_MAX);
+  currentConfig.fs_bat_en = (uint8_t)constrainI(currentConfig.fs_bat_en, 0, 1);
+  currentConfig.fs_rtx_en = (uint8_t)constrainI(currentConfig.fs_rtx_en, 0, 1);
+  currentConfig.fs_vz_speed = constrainF(currentConfig.fs_vz_speed, 0.05f, CFG_VZ_MAX_MPS);
+
+  currentConfig.roll_pid.kp = constrainF(currentConfig.roll_pid.kp, 0.0f, CFG_RATE_KP_MAX);
+  currentConfig.roll_pid.ki = constrainF(currentConfig.roll_pid.ki, 0.0f, CFG_RATE_KI_MAX);
+  currentConfig.roll_pid.kd = constrainF(currentConfig.roll_pid.kd, 0.0f, CFG_RATE_KD_MAX);
+  currentConfig.pitch_pid.kp = constrainF(currentConfig.pitch_pid.kp, 0.0f, CFG_RATE_KP_MAX);
+  currentConfig.pitch_pid.ki = constrainF(currentConfig.pitch_pid.ki, 0.0f, CFG_RATE_KI_MAX);
+  currentConfig.pitch_pid.kd = constrainF(currentConfig.pitch_pid.kd, 0.0f, CFG_RATE_KD_MAX);
+  currentConfig.yaw_pid.kp = constrainF(currentConfig.yaw_pid.kp, 0.0f, CFG_RATE_KP_MAX);
+  currentConfig.yaw_pid.ki = constrainF(currentConfig.yaw_pid.ki, 0.0f, CFG_RATE_KI_MAX);
+  currentConfig.yaw_pid.kd = constrainF(currentConfig.yaw_pid.kd, 0.0f, CFG_RATE_KD_MAX);
+  currentConfig.vz_pid.kp = constrainF(currentConfig.vz_pid.kp, 0.0f, CFG_VZ_KP_MAX);
+  currentConfig.vz_pid.ki = constrainF(currentConfig.vz_pid.ki, 0.0f, CFG_VZ_KI_MAX);
+  currentConfig.vz_pid.kd = constrainF(currentConfig.vz_pid.kd, 0.0f, CFG_VZ_KD_MAX);
+
+  currentConfig.vtx_en = (uint8_t)constrainI(currentConfig.vtx_en, 0, 1);
+  currentConfig.vtx_prot = (uint8_t)constrainI(currentConfig.vtx_prot, 0, 2);
+  currentConfig.vtx_mhz = (uint16_t)constrainI(currentConfig.vtx_mhz, 5000, 6000);
+  currentConfig.vtx_mw = (currentConfig.vtx_mw == 0) ? 25U : (uint16_t)constrainI(currentConfig.vtx_mw, 1, 10000);
+
+  currentConfig.rtx_en = (uint8_t)constrainI(currentConfig.rtx_en, 0, 1);
+  currentConfig.rtx_id = (uint8_t)constrainI(currentConfig.rtx_id, 0, 3);
+  currentConfig.rtx_band = (uint8_t)constrainI(currentConfig.rtx_band, 1, 9);
+  currentConfig.rtx_hw_crc_en = (uint8_t)constrainI(currentConfig.rtx_hw_crc_en, 0, 1);
+  currentConfig.rtx_addr_en = (uint8_t)constrainI(currentConfig.rtx_addr_en, 0, 1);
+  currentConfig.rtx_iq_inv = (uint8_t)constrainI(currentConfig.rtx_iq_inv, 0, 1);
+  currentConfig.rtx_pri_chan = (uint8_t)constrainI(currentConfig.rtx_pri_chan, 0, 99);
+  currentConfig.rtx_pri_sf = (uint8_t)constrainI(currentConfig.rtx_pri_sf, 5, 12);
+  currentConfig.rtx_pri_bw = (uint8_t)constrainI(currentConfig.rtx_pri_bw, 0, 9);
+  currentConfig.rtx_pri_cr = (uint8_t)constrainI(currentConfig.rtx_pri_cr, 1, 4);
+  currentConfig.rtx_pri_power = (int8_t)constrainI(currentConfig.rtx_pri_power, -9, 22);
+  currentConfig.rtx_bak_chan = (uint8_t)constrainI(currentConfig.rtx_bak_chan, 0, 99);
+  currentConfig.rtx_bak_sf = (uint8_t)constrainI(currentConfig.rtx_bak_sf, 5, 12);
+  currentConfig.rtx_bak_bw = (uint8_t)constrainI(currentConfig.rtx_bak_bw, 0, 9);
+  currentConfig.rtx_bak_cr = (uint8_t)constrainI(currentConfig.rtx_bak_cr, 1, 4);
+  currentConfig.rtx_bak_power = (int8_t)constrainI(currentConfig.rtx_bak_power, -9, 22);
+}
+
 static inline float getBatteryCompensationFactor() {
   if (!currentConfig.bat_comp_en || !batt_valid || v_batt <= 2.0f || !isfinite(v_batt)) return 1.0f;
   return constrainF(getEffectiveBatVMax() / v_batt, 0.95f, 1.35f);
@@ -859,6 +987,7 @@ void handleMotorArmStateAndEepromError() {
 }
 
 void applyFilterConfig() {
+  sanitizeConfig();
   lpf_gx.alpha = lpf_gy.alpha = lpf_gz.alpha = currentConfig.gyro_filter_alpha;
   lpf_ax.alpha = lpf_ay.alpha = lpf_az.alpha = currentConfig.acc_filter_alpha;
   if (!currentConfig.flt_lpf_en) {
@@ -873,6 +1002,7 @@ void applyFilterConfig() {
 }
 
 void updatePidTunings() {
+  sanitizeConfig();
   rollRatePID.updateConfig(currentConfig.roll_pid);
   pitchRatePID.updateConfig(currentConfig.pitch_pid);
   yawRatePID.updateConfig(currentConfig.yaw_pid);
@@ -909,6 +1039,7 @@ void resetToFactoryDefaults() {
   currentConfig.yaw_pid = {0.60f, 0.010f, 0.0f};
   currentConfig.vz_pid = {7.0f, 1.2f, 0.30f};
 
+  sanitizeConfig();
   vtx_link_ok = false; vtx_detected_proto = VTX_PROTO_NONE;
   main_rtx_chan = active_rtx_chan = currentConfig.rtx_pri_chan;
   is_on_backup = false;
@@ -930,8 +1061,7 @@ void loadSettings() {
     setFcErrorRam(FC_ERR_EEPROM_RESET);
     return;
   }
-  currentConfig.bat_v_max = getEffectiveBatVMax();
-  currentConfig.flt_esc_limit = getEffectiveEscDeltaLimit();
+  sanitizeConfig();
   rollRatePID.init(currentConfig.roll_pid, 200.0f);
   pitchRatePID.init(currentConfig.pitch_pid, 200.0f);
   yawRatePID.init(currentConfig.yaw_pid, 200.0f);
@@ -941,8 +1071,7 @@ void loadSettings() {
 
 void saveSettings() {
   if (is_armed || CliAutoCal::isFlightActive()) return;
-  currentConfig.bat_v_max = getEffectiveBatVMax();
-  currentConfig.flt_esc_limit = getEffectiveEscDeltaLimit();
+  sanitizeConfig();
   currentConfig.magic_marker = EEPROM_MAGIC_MARKER;
 
   const uint8_t* src = reinterpret_cast<const uint8_t*>(&currentConfig);
@@ -1167,7 +1296,7 @@ void readRx() {
       current_link_quality = lq;
       float t_v = (float)raw[idx++] * 10.0f, r_v = (float)raw[idx++] * 10.0f;
       float p_v = (float)raw[idx++] * 10.0f, y_v = (float)raw[idx++] * 10.0f;
-      float a = constrainF(currentConfig.rc_filter_smoothing, 0.01f, 1.0f);
+      float a = constrainF(currentConfig.rc_filter_smoothing, CFG_ALPHA_MIN, CFG_ALPHA_MAX);
       smooth_throttle = a * t_v + (1.0f - a) * smooth_throttle;
       smooth_roll = a * r_v + (1.0f - a) * smooth_roll;
       smooth_pitch = a * p_v + (1.0f - a) * smooth_pitch;
@@ -1599,12 +1728,13 @@ namespace SensorDriver {
   void calibrateBatVoltage(float actual_voltage); void calibrateCurrent(bool has_value, float actual_current_a);
 
   float getEffectiveLidarMaxM() { return activeSensors.lidar_max_m * 0.90f; }
-  inline float getBatScaleV() { return (currentConfig.bat_scale_v > 0.1f) ? currentConfig.bat_scale_v : 4.85f; }
-  inline float getBatScaleA() { return (currentConfig.bat_scale_a > 0.01f) ? currentConfig.bat_scale_a : 1.0f; }
+  inline float getBatScaleV() { return constrainF(currentConfig.bat_scale_v, CFG_BAT_SCALE_V_MIN, CFG_BAT_SCALE_V_MAX); }
+  inline float getBatScaleA() { return constrainF(currentConfig.bat_scale_a, CFG_BAT_SCALE_A_MIN, CFG_BAT_SCALE_A_MAX); }
 
   inline float computeCurrentAmpsFromAdc(uint16_t raw_adc) {
     float pin_v = ((float)raw_adc / 4095.0f) * 3.3f;
-    float a = ((pin_v / SHUNT_RESISTANCE_OHM) - currentConfig.bat_offset_a) * getBatScaleA();
+    float off_a = constrainF(currentConfig.bat_offset_a, CFG_BAT_OFFSET_A_MIN, CFG_BAT_OFFSET_A_MAX);
+    float a = ((pin_v / SHUNT_RESISTANCE_OHM) - off_a) * getBatScaleA();
     return (a > 0.0f) ? a : 0.0f;
   }
 
@@ -2202,7 +2332,8 @@ namespace SensorDriver {
     float q0 = orientation.q0, q1 = orientation.q1, q2 = orientation.q2, q3 = orientation.q3;
     float vf = (2.0f * (q1 * q3 - q0 * q2) * SIN_45) + (((q0 * q0) - (q1 * q1) - (q2 * q2) + (q3 * q3)) * COS_45);
     if (vf < 0.15f) vf = 0.15f;
-    float c = (slant_m * vf) + currentConfig.lidar_offset_m;
+    float off_m = constrainF(currentConfig.lidar_offset_m, CFG_LIDAR_OFFSET_MIN, CFG_LIDAR_OFFSET_MAX);
+    float c = (slant_m * vf) + off_m;
     return (c < 0.0f) ? 0.0f : c;
   }
 
@@ -2217,8 +2348,10 @@ namespace SensorDriver {
     if (!activeSensors.lidar_found) { uart1.println("ERR: lidar"); return; }
     float sum = 0.0f; uint8_t ok = 0;
     for (uint8_t i = 0; i < 20; i++) { float sm = 0.0f; if (readRawLidarSlantMeters(sm)) { sum += sm; ok++; } delay(15); }
-    if (ok > 0) { currentConfig.lidar_offset_m = -(sum / (float)ok); adaptive_lidar.reset(); saveSettings(); uart1.println("OK: cal_lid"); }
-    else uart1.println("ERR: cal_lid");
+    if (ok > 0) {
+      currentConfig.lidar_offset_m = constrainF(-(sum / (float)ok), CFG_LIDAR_OFFSET_MIN, CFG_LIDAR_OFFSET_MAX);
+      adaptive_lidar.reset(); saveSettings(); uart1.println("OK: cal_lid");
+    } else uart1.println("ERR: cal_lid");
   }
 
   void calibrateBatVoltage(float actual_v) {
@@ -2226,7 +2359,7 @@ namespace SensorDriver {
     uint32_t sum = 0; for (uint8_t i = 0; i < 32; i++) { sum += adc1ReadChannel(4); delay(2); }
     float pv = (((float)sum / 32.0f) / 4095.0f) * 3.3f;
     if (pv < 0.01f) { uart1.println("ERR: adc"); return; }
-    currentConfig.bat_scale_v = actual_v / pv;
+    currentConfig.bat_scale_v = constrainF(actual_v / pv, CFG_BAT_SCALE_V_MIN, CFG_BAT_SCALE_V_MAX);
     v_batt = lpf_battery.output = actual_v; batt_valid = true; power_w = v_batt * current_a;
     saveSettings(); uart1.println("OK: cal_bat");
   }
@@ -2235,13 +2368,14 @@ namespace SensorDriver {
     uint32_t sum = 0; for (uint8_t i = 0; i < 32; i++) { sum += adc1ReadChannel(5); delay(2); }
     float sa = ((((float)sum / 32.0f) / 4095.0f) * 3.3f) / SHUNT_RESISTANCE_OHM;
     if (!has_val || fabsf(actual_a) < 0.001f) {
-      currentConfig.bat_offset_a = sa; current_a = power_w = lpf_current.output = 0.0f;
+      currentConfig.bat_offset_a = constrainF(sa, CFG_BAT_OFFSET_A_MIN, CFG_BAT_OFFSET_A_MAX);
+      current_a = power_w = lpf_current.output = 0.0f;
       saveSettings(); uart1.println("OK: cal_curr"); return;
     }
     if (!isfinite(actual_a) || actual_a < 0.0f || actual_a > 250.0f) { uart1.println("ERR: cal_curr"); return; }
     float da = sa - currentConfig.bat_offset_a;
     if (fabsf(da) < 0.01f) { uart1.println("ERR: cal_curr"); return; }
-    currentConfig.bat_scale_a = constrainF(actual_a / da, 0.05f, 20.0f);
+    currentConfig.bat_scale_a = constrainF(actual_a / da, CFG_BAT_SCALE_A_MIN, CFG_BAT_SCALE_A_MAX);
     current_a = lpf_current.output = actual_a; power_w = v_batt * current_a;
     saveSettings(); uart1.println("OK: cal_curr");
   }
@@ -2326,9 +2460,9 @@ void stepMagCalibrationNonBlocking(uint32_t now_ms) {
   if ((now_ms - mag_cal_start_ms) >= MAG_CAL_DURATION_MS) {
     mag_cal_active = false;
     if (mag_cal_max_x > mag_cal_min_x && mag_cal_max_y > mag_cal_min_y && mag_cal_max_z > mag_cal_min_z) {
-      currentConfig.mag_bias_x = 0.5f * (mag_cal_min_x + mag_cal_max_x);
-      currentConfig.mag_bias_y = 0.5f * (mag_cal_min_y + mag_cal_max_y);
-      currentConfig.mag_bias_z = 0.5f * (mag_cal_min_z + mag_cal_max_z);
+      currentConfig.mag_bias_x = constrainF(0.5f * (mag_cal_min_x + mag_cal_max_x), CFG_MAG_BIAS_MIN, CFG_MAG_BIAS_MAX);
+      currentConfig.mag_bias_y = constrainF(0.5f * (mag_cal_min_y + mag_cal_max_y), CFG_MAG_BIAS_MIN, CFG_MAG_BIAS_MAX);
+      currentConfig.mag_bias_z = constrainF(0.5f * (mag_cal_min_z + mag_cal_max_z), CFG_MAG_BIAS_MIN, CFG_MAG_BIAS_MAX);
       saveSettings(); uart1.println("DONE: cal_mag");
     } else uart1.println("ERR: cal_mag");
   }
@@ -2386,7 +2520,7 @@ void updateAuxSensorsNonBlocking(uint32_t now_ms) {
 }
 
 // ==============================================================================
-// 10. АВТОКАЛИБРОВКА И CLI (USART1: PA9 TX / PA10 RX)
+// 10. АВТОКАЛИБРОВКА, INFO И CLI (USART1: PA9 TX / PA10 RX)
 // ==============================================================================
 namespace CliAutoCal {
   constexpr uint8_t BTN_PIN = 8;
@@ -2508,7 +2642,8 @@ namespace CliAutoCal {
       m1 = m2 = m3 = m4 = 0.0f;
       if (!lok) { stop(REASON_SENSOR_FAIL, FC_ERR_LIDAR_FAIL); return true; }
       if (!SensorDriver::calibrateGyro(true) || !SensorDriver::calibrateAcc(true)) { stop(REASON_SENSOR_FAIL, FC_ERR_IMU_FAIL); return true; }
-      currentConfig.lidar_offset_m = -lm; adaptive_lidar.reset();
+      currentConfig.lidar_offset_m = constrainF(-lm, CFG_LIDAR_OFFSET_MIN, CFG_LIDAR_OFFSET_MAX);
+      adaptive_lidar.reset();
       orientation = Quaternion();
       vzPID.reset(); rollRatePID.reset(); pitchRatePID.reset(); yawRatePID.reset();
       hover_sum = 0.0f; hover_cnt = 0; flight_active = true;
@@ -2539,8 +2674,10 @@ namespace CliAutoCal {
         if (!pid_step) {
           prev_r_kp = currentConfig.roll_pid.kp; prev_p_kp = currentConfig.pitch_pid.kp;
           prev_r_kd = currentConfig.roll_pid.kd; prev_p_kd = currentConfig.pitch_pid.kd;
-          currentConfig.roll_pid.kp *= 1.12f; currentConfig.pitch_pid.kp *= 1.12f;
-          currentConfig.roll_pid.kd *= 1.10f; currentConfig.pitch_pid.kd *= 1.10f;
+          currentConfig.roll_pid.kp = constrainF(currentConfig.roll_pid.kp * 1.12f, 0.0f, CFG_RATE_KP_MAX);
+          currentConfig.pitch_pid.kp = constrainF(currentConfig.pitch_pid.kp * 1.12f, 0.0f, CFG_RATE_KP_MAX);
+          currentConfig.roll_pid.kd = constrainF(currentConfig.roll_pid.kd * 1.10f, 0.0f, CFG_RATE_KD_MAX);
+          currentConfig.pitch_pid.kd = constrainF(currentConfig.pitch_pid.kd * 1.10f, 0.0f, CFG_RATE_KD_MAX);
           updatePidTunings(); pid_step = true; peak_vib = vibration_index;
         }
       } else if (pid_step) {
@@ -2573,134 +2710,6 @@ namespace CliAutoCal {
   }
 } // namespace CliAutoCal
 
-const CliParam cliParams[] = {
-  {"esc_prot", &currentConfig.esc_prot, CLI_U8, HOOK_NONE, 0, 1},
-  {"imu_align", &currentConfig.imu_align, CLI_U8, HOOK_NONE, 0, 3},
-  {"com_align", &currentConfig.com_align, CLI_U8, HOOK_NONE, 0, 3},
-  {"imu_id", &currentConfig.imu_id, CLI_U8, HOOK_IMU, 0, 6},
-  {"bar_id", &currentConfig.bar_id, CLI_U8, HOOK_BARO, 0, 7},
-  {"com_id", &currentConfig.com_id, CLI_U8, HOOK_MAG, 0, 6},
-  {"lid_id", &currentConfig.lid_id, CLI_U8, HOOK_LIDAR, 0, 4},
-  {"baro_en", &currentConfig.baro_en, CLI_U8, HOOK_BARO, 0, 1},
-  {"com_en", &currentConfig.com_en, CLI_U8, HOOK_MAG, 0, 1},
-  {"lidar_en", &currentConfig.lidar_en, CLI_U8, HOOK_LIDAR, 0, 1},
-  {"lidar_filter_alpha", &currentConfig.lidar_filter_alpha, CLI_F32, HOOK_NONE, 0, 0},
-  {"lidar_offset_m", &currentConfig.lidar_offset_m, CLI_F32, HOOK_NONE, 0, 0},
-  {"mag_bias_x", &currentConfig.mag_bias_x, CLI_F32, HOOK_NONE, 0, 0},
-  {"mag_bias_y", &currentConfig.mag_bias_y, CLI_F32, HOOK_NONE, 0, 0},
-  {"mag_bias_z", &currentConfig.mag_bias_z, CLI_F32, HOOK_NONE, 0, 0},
-  {"bat_scale_v", &currentConfig.bat_scale_v, CLI_F32, HOOK_NONE, 0, 0},
-  {"bat_filter_alpha", &currentConfig.bat_filter_alpha, CLI_F32, HOOK_DSP_PID, 0, 0},
-  {"bat_offset_a", &currentConfig.bat_offset_a, CLI_F32, HOOK_NONE, 0, 0},
-  {"bat_scale_a", &currentConfig.bat_scale_a, CLI_F32, HOOK_NONE, 0, 0},
-  {"bat_comp_en", &currentConfig.bat_comp_en, CLI_U8, HOOK_NONE, 0, 1},
-  {"bat_v_max", &currentConfig.bat_v_max, CLI_F32, HOOK_DSP_PID, 70, 250},
-  {"flt_esc_limit", &currentConfig.flt_esc_limit, CLI_F32, HOOK_DSP_PID, 1, 100},
-  {"vtx_en", &currentConfig.vtx_en, CLI_U8, HOOK_VTX_EN, 0, 1},
-  {"vtx_prot", &currentConfig.vtx_prot, CLI_U8, HOOK_VTX_PROT, 0, 2},
-  {"vtx_mhz", &currentConfig.vtx_mhz, CLI_U16, HOOK_VTX_MHZ, 5000, 6000},
-  {"vtx_mw", &currentConfig.vtx_mw, CLI_U16, HOOK_VTX_MW, 1, 10000},
-  {"rtx_id", &currentConfig.rtx_id, CLI_U8, HOOK_RTX, 0, 3},
-  {"rtx_en", &currentConfig.rtx_en, CLI_U8, HOOK_RTX, 0, 1},
-  {"rtx_band", &currentConfig.rtx_band, CLI_U8, HOOK_RTX, 1, 9},
-  {"rtx_hw_crc_en", &currentConfig.rtx_hw_crc_en, CLI_U8, HOOK_RTX, 0, 1},
-  {"rtx_addr_en", &currentConfig.rtx_addr_en, CLI_U8, HOOK_RTX, 0, 1},
-  {"rtx_addr", &currentConfig.rtx_addr, CLI_U16, HOOK_RTX, 0, 65535},
-  {"rtx_sync_word", &currentConfig.rtx_sync_word, CLI_U16, HOOK_RTX, 0, 65535},
-  {"rtx_iq_inv", &currentConfig.rtx_iq_inv, CLI_U8, HOOK_RTX, 0, 1},
-  {"rtx_pri_chan", &currentConfig.rtx_pri_chan, CLI_U8, HOOK_RTX, 0, 99},
-  {"rtx_pri_sf", &currentConfig.rtx_pri_sf, CLI_U8, HOOK_RTX, 5, 12},
-  {"rtx_pri_bw", &currentConfig.rtx_pri_bw, CLI_U8, HOOK_RTX, 0, 9},
-  {"rtx_pri_cr", &currentConfig.rtx_pri_cr, CLI_U8, HOOK_RTX, 1, 4},
-  {"rtx_pri_power", &currentConfig.rtx_pri_power, CLI_I8, HOOK_RTX, -9, 22},
-  {"rtx_bak_chan", &currentConfig.rtx_bak_chan, CLI_U8, HOOK_RTX, 0, 99},
-  {"rtx_bak_sf", &currentConfig.rtx_bak_sf, CLI_U8, HOOK_RTX, 5, 12},
-  {"rtx_bak_bw", &currentConfig.rtx_bak_bw, CLI_U8, HOOK_RTX, 0, 9},
-  {"rtx_bak_cr", &currentConfig.rtx_bak_cr, CLI_U8, HOOK_RTX, 1, 4},
-  {"rtx_bak_power", &currentConfig.rtx_bak_power, CLI_I8, HOOK_RTX, -9, 22},
-  {"fm_mode", &currentConfig.fm_mode, CLI_U8, HOOK_NONE, 0, 3},
-  {"fm_roll_max", &currentConfig.fm_roll_max, CLI_F32, HOOK_NONE, 0, 0},
-  {"fm_pitch_max", &currentConfig.fm_pitch_max, CLI_F32, HOOK_NONE, 0, 0},
-  {"fm_vz_speed_max", &currentConfig.fm_vz_speed_max, CLI_F32, HOOK_NONE, 0, 0},
-  {"rc_rate", &currentConfig.rc_rate, CLI_F32, HOOK_NONE, 0, 0},
-  {"rc_super_expo", &currentConfig.rc_super_expo, CLI_F32, HOOK_NONE, 0, 0},
-  {"rc_stick_expo", &currentConfig.rc_stick_expo, CLI_F32, HOOK_NONE, 0, 0},
-  {"rc_yaw_rate", &currentConfig.rc_yaw_rate, CLI_F32, HOOK_NONE, 0, 0},
-  {"rc_yaw_super_expo", &currentConfig.rc_yaw_super_expo, CLI_F32, HOOK_NONE, 0, 0},
-  {"rc_yaw_expo", &currentConfig.rc_yaw_expo, CLI_F32, HOOK_NONE, 0, 0},
-  {"rc_deadband", &currentConfig.rc_deadband, CLI_F32, HOOK_NONE, 0, 0},
-  {"rc_horizon_transition", &currentConfig.rc_horizon_transition, CLI_F32, HOOK_NONE, 0, 0},
-  {"rc_filter_smoothing", &currentConfig.rc_filter_smoothing, CLI_F32, HOOK_NONE, 0, 0},
-  {"fs_bat_en", &currentConfig.fs_bat_en, CLI_U8, HOOK_NONE, 0, 1},
-  {"fs_rtx_en", &currentConfig.fs_rtx_en, CLI_U8, HOOK_NONE, 0, 1},
-  {"fs_vz_speed", &currentConfig.fs_vz_speed, CLI_F32, HOOK_NONE, 0, 0},
-  {"bat_fs_v", &currentConfig.bat_fs_v, CLI_F32, HOOK_NONE, 0, 0},
-  {"flt_amb_en", &currentConfig.flt_amb_en, CLI_U8, HOOK_DSP_PID, 0, 1},
-  {"flt_lpf_en", &currentConfig.flt_lpf_en, CLI_U8, HOOK_DSP_PID, 0, 1},
-  {"flt_not_en", &currentConfig.flt_not_en, CLI_U8, HOOK_DSP_PID, 0, 1},
-  {"gyro_filter_alpha", &currentConfig.gyro_filter_alpha, CLI_F32, HOOK_DSP_PID, 0, 0},
-  {"acc_filter_alpha", &currentConfig.acc_filter_alpha, CLI_F32, HOOK_DSP_PID, 0, 0},
-  {"filter_notch_freq", &currentConfig.filter_notch_freq, CLI_F32, HOOK_DSP_PID, 0, 0},
-  {"filter_notch_bw", &currentConfig.filter_notch_bw, CLI_F32, HOOK_DSP_PID, 0, 0},
-  {"flt_amb", &currentConfig.flt_amb, CLI_F32, HOOK_DSP_PID, 0, 0},
-  {"flt_amb_min", &currentConfig.flt_amb_min, CLI_F32, HOOK_DSP_PID, 0, 0},
-  {"roll_kp", &currentConfig.roll_pid.kp, CLI_F32, HOOK_DSP_PID, 0, 0},
-  {"roll_ki", &currentConfig.roll_pid.ki, CLI_F32, HOOK_DSP_PID, 0, 0},
-  {"roll_kd", &currentConfig.roll_pid.kd, CLI_F32, HOOK_DSP_PID, 0, 0},
-  {"pitch_kp", &currentConfig.pitch_pid.kp, CLI_F32, HOOK_DSP_PID, 0, 0},
-  {"pitch_ki", &currentConfig.pitch_pid.ki, CLI_F32, HOOK_DSP_PID, 0, 0},
-  {"pitch_kd", &currentConfig.pitch_pid.kd, CLI_F32, HOOK_DSP_PID, 0, 0},
-  {"yaw_kp", &currentConfig.yaw_pid.kp, CLI_F32, HOOK_DSP_PID, 0, 0},
-  {"yaw_ki", &currentConfig.yaw_pid.ki, CLI_F32, HOOK_DSP_PID, 0, 0},
-  {"yaw_kd", &currentConfig.yaw_pid.kd, CLI_F32, HOOK_DSP_PID, 0, 0},
-  {"vz_kp", &currentConfig.vz_pid.kp, CLI_F32, HOOK_DSP_PID, 0, 0},
-  {"vz_ki", &currentConfig.vz_pid.ki, CLI_F32, HOOK_DSP_PID, 0, 0},
-  {"vz_kd", &currentConfig.vz_pid.kd, CLI_F32, HOOK_DSP_PID, 0, 0}
-};
-
-static void runParamHook(CliHook h) {
-  switch (h) {
-    case HOOK_VTX_EN:
-      if (!currentConfig.vtx_en) { vtx_link_ok = false; vtx_probe_step = VTX_STEP_IDLE; } else vtxInit();
-      saveSettings(); break;
-    case HOOK_VTX_PROT: vtxInit(); saveSettings(); break;
-    case HOOK_VTX_MHZ: vtxSetFrequencyMhz(currentConfig.vtx_mhz, true, true); break;
-    case HOOK_VTX_MW: vtxSetPowerMw(currentConfig.vtx_mw, true, true); break;
-    case HOOK_RTX:
-      main_rtx_chan = (uint8_t)constrainI(currentConfig.rtx_pri_chan, 0, 99);
-      if (!is_on_backup) active_rtx_chan = main_rtx_chan;
-      if (!is_armed && currentConfig.rtx_en) applyRtxConfiguration(is_on_backup);
-      break;
-    case HOOK_IMU: if (!is_armed) SensorDriver::detectIMU(); break;
-    case HOOK_BARO:
-      if (!is_armed) {
-        if (currentConfig.baro_en) SensorDriver::detectBaro();
-        else { SensorDriver::activeSensors.baro_found = false; SensorDriver::baroCal.valid = false; }
-      }
-      break;
-    case HOOK_MAG:
-      if (!is_armed) {
-        if (currentConfig.com_en) SensorDriver::detectMag();
-        else { SensorDriver::activeSensors.mag_found = false; compass_valid = false; }
-      }
-      break;
-    case HOOK_LIDAR:
-      if (!is_armed) {
-        if (currentConfig.lidar_en) { SensorDriver::detectLidar(); SensorDriver::initLidarHardware(); }
-        else SensorDriver::activeSensors.lidar_found = false;
-      }
-      break;
-    case HOOK_DSP_PID:
-      currentConfig.flt_amb = constrainF(currentConfig.flt_amb, 0.001f, 1.0f);
-      currentConfig.flt_amb_min = constrainF(currentConfig.flt_amb_min, 0.0005f, currentConfig.flt_amb);
-      currentConfig.flt_esc_limit = getEffectiveEscDeltaLimit();
-      currentConfig.bat_v_max = getEffectiveBatVMax();
-      applyFilterConfig(); updatePidTunings();
-      break;
-    default: break;
-  }
-}
-
 static const char* skipSpaces(const char* s) {
   while (s && (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n')) s++;
   return s;
@@ -2717,31 +2726,62 @@ static bool parseNumberStrict(const char* s, float &out) {
   out = v; return true;
 }
 
-static const CliParam* findCliParam(const char* name) {
-  if (!name || !*name) return nullptr;
-  constexpr size_t n = sizeof(cliParams) / sizeof(cliParams[0]);
-  for (size_t i = 0; i < n; i++) if (strcmp(name, cliParams[i].name) == 0) return &cliParams[i];
-  return nullptr;
-}
+static void printSystemInfo() {
+  sanitizeConfig();
+  uart1.print("INFO: err="); uart1.print((int)getActiveStatusErrorCode());
+  uart1.print(" arm="); uart1.print(is_armed ? 1 : 0);
+  uart1.print(" fs="); uart1.print(is_failsafe ? 1 : 0);
+  uart1.print(" fm="); uart1.print((int)currentConfig.fm_mode);
+  uart1.print(" esc="); uart1.print((int)currentConfig.esc_prot);
+  uart1.print(" lim="); uart1.print(getEffectiveEscDeltaLimit(), 1);
+  uart1.print(" hov="); uart1.println(base_hover_throttle, 1);
 
-static void printCliParam(const CliParam* p) {
-  if (!p) return;
-  uart1.print(p->name); uart1.print("=");
-  if (strcmp(p->name, "bat_v_max") == 0) { uart1.println(*(float*)p->ptr, 1); return; }
-  if (p->type == CLI_F32) uart1.println(*(float*)p->ptr, 4);
-  else if (p->type == CLI_U8) uart1.println((int)*(uint8_t*)p->ptr);
-  else if (p->type == CLI_I8) uart1.println((int)*(int8_t*)p->ptr);
-  else uart1.println((unsigned int)*(uint16_t*)p->ptr);
-}
+  uart1.print("CFG_FM: rmax="); uart1.print(currentConfig.fm_roll_max, 1);
+  uart1.print(" pmax="); uart1.print(currentConfig.fm_pitch_max, 1);
+  uart1.print(" vzmax="); uart1.print(currentConfig.fm_vz_speed_max, 2);
+  uart1.print(" fsvz="); uart1.println(currentConfig.fs_vz_speed, 2);
 
-static void writeCliParamValue(const CliParam* p, float val) {
-  if (!p || !isfinite(val)) return;
-  if (strcmp(p->name, "bat_v_max") == 0) { *(float*)p->ptr = roundToTenthVolt(constrainF(val, 7.0f, 25.0f)); return; }
-  if (strcmp(p->name, "flt_esc_limit") == 0) { *(float*)p->ptr = constrainF(val, 1.0f, 100.0f); return; }
-  if (p->type == CLI_F32) *(float*)p->ptr = val;
-  else if (p->type == CLI_U8) *(uint8_t*)p->ptr = (uint8_t)constrainI((int)lroundf(val), p->min_v, p->max_v);
-  else if (p->type == CLI_I8) *(int8_t*)p->ptr = (int8_t)constrainI((int)lroundf(val), p->min_v, p->max_v);
-  else *(uint16_t*)p->ptr = (uint16_t)constrainL((long)llroundf(val), (long)p->min_v, (long)p->max_v);
+  uart1.print("CFG_RC: r="); uart1.print(currentConfig.rc_rate, 2);
+  uart1.print(" se="); uart1.print(currentConfig.rc_super_expo, 2);
+  uart1.print(" exp="); uart1.print(currentConfig.rc_stick_expo, 2);
+  uart1.print(" yr="); uart1.print(currentConfig.rc_yaw_rate, 2);
+  uart1.print(" db="); uart1.print(currentConfig.rc_deadband, 1);
+  uart1.print(" sm="); uart1.println(currentConfig.rc_filter_smoothing, 2);
+
+  uart1.print("CFG_FLT: lpf="); uart1.print((int)currentConfig.flt_lpf_en);
+  uart1.print(" ga="); uart1.print(currentConfig.gyro_filter_alpha, 3);
+  uart1.print(" aa="); uart1.print(currentConfig.acc_filter_alpha, 3);
+  uart1.print(" not="); uart1.print((int)currentConfig.flt_not_en);
+  uart1.print(" nf="); uart1.print(currentConfig.filter_notch_freq, 1);
+  uart1.print(" bw="); uart1.print(currentConfig.filter_notch_bw, 1);
+  uart1.print(" amb="); uart1.print((int)currentConfig.flt_amb_en);
+  uart1.print(" hi="); uart1.print(currentConfig.flt_amb, 4);
+  uart1.print(" lo="); uart1.println(currentConfig.flt_amb_min, 4);
+
+  uart1.print("CFG_PID: r="); uart1.print(currentConfig.roll_pid.kp, 3); uart1.print("/"); uart1.print(currentConfig.roll_pid.ki, 3); uart1.print("/"); uart1.print(currentConfig.roll_pid.kd, 3);
+  uart1.print(" p="); uart1.print(currentConfig.pitch_pid.kp, 3); uart1.print("/"); uart1.print(currentConfig.pitch_pid.ki, 3); uart1.print("/"); uart1.print(currentConfig.pitch_pid.kd, 3);
+  uart1.print(" y="); uart1.print(currentConfig.yaw_pid.kp, 3); uart1.print("/"); uart1.print(currentConfig.yaw_pid.ki, 3); uart1.print("/"); uart1.print(currentConfig.yaw_pid.kd, 3);
+  uart1.print(" vz="); uart1.print(currentConfig.vz_pid.kp, 2); uart1.print("/"); uart1.print(currentConfig.vz_pid.ki, 2); uart1.println("/"); uart1.println(currentConfig.vz_pid.kd, 2);
+
+  uart1.print("CFG_BAT: v="); uart1.print(v_batt, 2);
+  uart1.print(" vmax="); uart1.print(getEffectiveBatVMax(), 1);
+  uart1.print(" fsv="); uart1.print(currentConfig.bat_fs_v, 1);
+  uart1.print(" comp="); uart1.print((int)currentConfig.bat_comp_en);
+  uart1.print(" sv="); uart1.print(currentConfig.bat_scale_v, 3);
+  uart1.print(" oa="); uart1.print(currentConfig.bat_offset_a, 3);
+  uart1.print(" sa="); uart1.print(currentConfig.bat_scale_a, 3);
+  uart1.print(" wh="); uart1.println(consumed_wh, 3);
+
+  uart1.print("CFG_HW: imu="); uart1.print((int)SensorDriver::activeSensors.imu_type);
+  uart1.print(" bar="); uart1.print((int)SensorDriver::activeSensors.baro_type);
+  uart1.print(" mag="); uart1.print((int)SensorDriver::activeSensors.mag_type);
+  uart1.print(" lid="); uart1.print((int)SensorDriver::activeSensors.lidar_type);
+  uart1.print(" loff="); uart1.print(currentConfig.lidar_offset_m, 3);
+  uart1.print(" rtx="); uart1.print((int)currentConfig.rtx_en);
+  uart1.print(" ch="); uart1.print((int)active_rtx_chan);
+  uart1.print(" vtx="); uart1.print((int)currentConfig.vtx_en);
+  uart1.print(" mhz="); uart1.print((unsigned int)currentConfig.vtx_mhz);
+  uart1.print(" mw="); uart1.println((unsigned int)currentConfig.vtx_mw);
 }
 
 static void startBenchTestMode(BenchTestMode mode, const char* tag) {
@@ -2763,269 +2803,213 @@ static void executeCommand(const char* cmd) {
   mon_stream_active = false;
 
   if (strcmp(s, "help") == 0) {
-    uart1.println("OK: set get dump save default cal_imu cal_gyro cal_acc cal_mag cal_bar cal_lid cal_bat cal_curr auto_cal auto_stop mon test_imu test_mag test_bar test_lid test_bat test_rtx test_vtx test_mot test_pid");
-  } else if (strncmp(s, "set", 3) == 0 && (s[3] == ' ' || s[3] == '\t' || s[3] == '=')) {
-    const char* args = skipSpaces(s + 3);
-    char key[48] = {0}; size_t kl = 0;
-    while (args[kl] && args[kl] != ' ' && args[kl] != '\t' && args[kl] != '=') {
-      if (kl < sizeof(key) - 1) key[kl] = args[kl];
-      kl++;
-    }
-    key[kl] = '\0';
-    const char* vs = skipSpaces(args + kl);
-    if (*vs == '=') vs = skipSpaces(vs + 1);
-    float val = 0.0f;
-    const CliParam* p = findCliParam(key);
-    if (!kl || !parseNumberStrict(vs, val) || !p) { uart1.println("ERR: set"); return; }
-    writeCliParamValue(p, val); runParamHook(p->hook); printCliParam(p);
-  } else if (strncmp(s, "get", 3) == 0 && (s[3] == ' ' || s[3] == '\t')) {
-    const CliParam* p = findCliParam(skipSpaces(s + 3));
-    if (!p) { uart1.println("ERR: param"); return; }
-    printCliParam(p);
-  } else if (strcmp(s, "dump") == 0) {
-    constexpr size_t n = sizeof(cliParams) / sizeof(cliParams[0]);
-    for (size_t i = 0; i < n; i++) printCliParam(&cliParams[i]);
+    uart1.println("OK: info save default cal_imu cal_gyro cal_acc cal_mag cal_bar cal_lid cal_bat cal_curr auto_cal auto_stop mon test_imu test_mag test_bar test_lid test_bat test_rtx test_vtx test_mot test_pid");
+  } else if (strcmp(s, "info") == 0) {
+    printSystemInfo();
   } else if (strcmp(s, "save") == 0) {
-    if (is_armed || CliAutoCal::isFlightActive()) { uart1.println("ERR: busy"); return; }
     saveSettings(); uart1.println("OK: save");
   } else if (strcmp(s, "default") == 0) {
-    if (is_armed || CliAutoCal::isFlightActive()) { uart1.println("ERR: busy"); return; }
-    resetToFactoryDefaults(); vtxInit();
-    if (currentConfig.rtx_en) applyRtxConfiguration(false);
+    resetToFactoryDefaults(); applyRtxConfiguration(false); vtxInit(); SensorDriver::autoDetectAll();
     uart1.println("OK: default");
-  } else if (strcmp(s, "cal_imu") == 0) { if (!is_armed) SensorDriver::calibrateIMU(); }
-  else if (strcmp(s, "cal_gyro") == 0) { if (!is_armed) (void)SensorDriver::calibrateGyro(false); }
-  else if (strcmp(s, "cal_acc") == 0) { if (!is_armed) (void)SensorDriver::calibrateAcc(false); }
-  else if (strcmp(s, "cal_mag") == 0) { if (!is_armed) startMagCalibrationNonBlocking(); }
-  else if (strcmp(s, "cal_bar") == 0) { if (!is_armed) SensorDriver::calibrateBaro(); }
-  else if (strcmp(s, "cal_lid") == 0) { if (!is_armed) SensorDriver::calibrateLidar(); }
-  else if (strncmp(s, "cal_bat", 7) == 0) {
+  } else if (strcmp(s, "cal_imu") == 0) {
+    SensorDriver::calibrateIMU();
+  } else if (strcmp(s, "cal_gyro") == 0) {
+    SensorDriver::calibrateGyro(false);
+  } else if (strcmp(s, "cal_acc") == 0) {
+    SensorDriver::calibrateAcc(false);
+  } else if (strcmp(s, "cal_mag") == 0) {
+    startMagCalibrationNonBlocking();
+  } else if (strcmp(s, "cal_bar") == 0) {
+    SensorDriver::calibrateBaro();
+  } else if (strcmp(s, "cal_lid") == 0) {
+    SensorDriver::calibrateLidar();
+  } else if (strncmp(s, "cal_bat", 7) == 0 && (s[7] == '\0' || s[7] == ' ' || s[7] == '\t')) {
     float v = 0.0f;
-    if (is_armed || !parseNumberStrict(s + 7, v)) uart1.println("ERR: cal_bat");
-    else SensorDriver::calibrateBatVoltage(v);
-  } else if (strncmp(s, "cal_curr", 8) == 0) {
-    if (is_armed) { uart1.println("ERR: armed"); return; }
-    const char* args = skipSpaces(s + 8);
-    if (!*args) SensorDriver::calibrateCurrent(false, 0.0f);
-    else { float a = 0.0f; if (!parseNumberStrict(args, a)) uart1.println("ERR: cal_curr"); else SensorDriver::calibrateCurrent(true, a); }
+    if (!parseNumberStrict(s + 7, v)) uart1.println("ERR: cal_bat"); else SensorDriver::calibrateBatVoltage(v);
+  } else if (strncmp(s, "cal_curr", 8) == 0 && (s[8] == '\0' || s[8] == ' ' || s[8] == '\t')) {
+    const char* ca = skipSpaces(s + 8);
+    if (!*ca) SensorDriver::calibrateCurrent(false, 0.0f);
+    else { float a = 0.0f; if (!parseNumberStrict(ca, a)) uart1.println("ERR: cal_curr"); else SensorDriver::calibrateCurrent(true, a); }
   } else if (strcmp(s, "auto_cal") == 0) {
-    if (is_armed) { uart1.println("ERR: armed"); return; }
     CliAutoCal::start(); uart1.println("OK: auto_cal");
   } else if (strcmp(s, "auto_stop") == 0) {
     CliAutoCal::stop(CliAutoCal::REASON_USER_CANCEL, FC_ERR_NONE); uart1.println("OK: auto_stop");
   } else if (strcmp(s, "mon") == 0) {
     mon_stream_active = true; mon_last_send_ms = 0; uart1.println("OK: mon");
+  } else if (strcmp(s, "test_imu") == 0) {
+    uint8_t b[14];
+    if (!SensorDriver::activeSensors.imu_found || !SensorDriver::readMPU6050(b)) uart1.println("ERR: imu");
+    else {
+      float ax = (float)((int16_t)(b[0] << 8 | b[1])) / SensorDriver::activeSensors.acc_scale;
+      float ay = (float)((int16_t)(b[2] << 8 | b[3])) / SensorDriver::activeSensors.acc_scale;
+      float az = (float)((int16_t)(b[4] << 8 | b[5])) / SensorDriver::activeSensors.acc_scale;
+      float gx = (float)((int16_t)(b[8] << 8 | b[9])) / SensorDriver::activeSensors.gyro_scale;
+      float gy = (float)((int16_t)(b[10] << 8 | b[11])) / SensorDriver::activeSensors.gyro_scale;
+      float gz = (float)((int16_t)(b[12] << 8 | b[13])) / SensorDriver::activeSensors.gyro_scale;
+      uart1.print("IMU: type="); uart1.print((int)SensorDriver::activeSensors.imu_type);
+      uart1.print(" acc="); uart1.print(ax, 2); uart1.print(","); uart1.print(ay, 2); uart1.print(","); uart1.print(az, 2);
+      uart1.print(" gyr="); uart1.print(gx, 1); uart1.print(","); uart1.print(gy, 1); uart1.print(","); uart1.println(gz, 1);
+    }
+  } else if (strcmp(s, "test_mag") == 0) {
+    float mx, my, mz, hd;
+    if (!SensorDriver::activeSensors.mag_found || !SensorDriver::readMagUnified(mx, my, mz)) uart1.println("ERR: mag");
+    else {
+      uart1.print("MAG: type="); uart1.print((int)SensorDriver::activeSensors.mag_type);
+      uart1.print(" uT="); uart1.print(mx, 1); uart1.print(","); uart1.print(my, 1); uart1.print(","); uart1.print(mz, 1);
+      if (SensorDriver::readCompassHeadingDeg(hd)) { uart1.print(" hdg="); uart1.println(hd, 1); } else uart1.println(" hdg=NA");
+    }
+  } else if (strcmp(s, "test_bar") == 0) {
+    float alt;
+    if (!SensorDriver::activeSensors.baro_found || !SensorDriver::readRawBaroAltitudeBlocking(alt)) uart1.println("ERR: baro");
+    else { uart1.print("BARO: type="); uart1.print((int)SensorDriver::activeSensors.baro_type); uart1.print(" alt="); uart1.println(alt, 2); }
+  } else if (strcmp(s, "test_lid") == 0) {
+    float sm;
+    if (!SensorDriver::activeSensors.lidar_found || !SensorDriver::readRawLidarSlantMeters(sm)) uart1.println("ERR: lidar");
+    else { uart1.print("LIDAR: type="); uart1.print((int)SensorDriver::activeSensors.lidar_type); uart1.print(" raw="); uart1.print(sm, 3); uart1.print(" corr="); uart1.println(SensorDriver::computeCorrectedLidarMeters(sm), 3); }
+  } else if (strcmp(s, "test_bat") == 0) {
+    readBatteryAndCurrent();
+    uart1.print("BAT: v="); uart1.print(v_batt, 2); uart1.print(" i="); uart1.print(current_a, 2);
+    uart1.print(" w="); uart1.print(power_w, 1); uart1.print(" valid="); uart1.println(batt_valid ? 1 : 0);
+  } else if (strcmp(s, "test_rtx") == 0) {
+    uart1.print("RTX: en="); uart1.print((int)currentConfig.rtx_en); uart1.print(" chip="); uart1.print((int)rtx_active_chip_id);
+    uart1.print(" chan="); uart1.print((int)active_rtx_chan); uart1.print(" lq="); uart1.println((int)current_link_quality);
+  } else if (strcmp(s, "test_vtx") == 0) {
+    uart1.print("VTX: en="); uart1.print((int)currentConfig.vtx_en); uart1.print(" proto="); uart1.print((int)vtx_detected_proto);
+    uart1.print(" mhz="); uart1.print((unsigned int)currentConfig.vtx_mhz); uart1.print(" mw="); uart1.println((unsigned int)currentConfig.vtx_mw);
   } else if (strcmp(s, "test_mot") == 0) {
     startBenchTestMode(BENCH_TEST_MOTORS, "test_mot");
   } else if (strcmp(s, "test_pid") == 0) {
     startBenchTestMode(BENCH_TEST_PID, "test_pid");
-  } else if (strcmp(s, "test_bat") == 0) {
-    uart1.print("BAT: v="); uart1.print(v_batt, 2); uart1.print(" i="); uart1.print(current_a, 2);
-    uart1.print(" w="); uart1.print(power_w, 1); uart1.print(" wh="); uart1.println(consumed_wh, 3);
-  } else if (strcmp(s, "test_rtx") == 0) {
-    uart1.print("RTX: en="); uart1.print(currentConfig.rtx_en ? 1 : 0);
-    uart1.print(" ch="); uart1.print((int)active_rtx_chan);
-    uart1.print(" bak="); uart1.print(is_on_backup ? 1 : 0);
-    uart1.print(" lq="); uart1.println((int)current_link_quality);
-  } else if (strcmp(s, "test_vtx") == 0) {
-    uart1.print("VTX: en="); uart1.print(currentConfig.vtx_en ? 1 : 0);
-    uart1.print(" link="); uart1.print(vtx_link_ok ? 1 : 0);
-    uart1.print(" mhz="); uart1.print((int)currentConfig.vtx_mhz);
-    uart1.print(" mw="); uart1.println((int)currentConfig.vtx_mw);
   } else {
     uart1.println("ERR: cmd");
   }
 }
 
 void parseCli() {
-  static char buf[128];
-  static size_t idx = 0;
-  uint8_t budget = 32;
-  while (uart1.available() > 0 && budget-- > 0) {
-    int ch = uart1.read();
-    if (ch < 0) break;
+  static char line[96]; static size_t len = 0;
+  while (uart1.available() > 0) {
+    int ch = uart1.read(); if (ch < 0) break;
     char c = (char)ch;
     if (c == '\r' || c == '\n') {
-      if (idx > 0) { buf[idx] = '\0'; idx = 0; executeCommand(buf); }
-    } else if (c == '\b' || (uint8_t)c == 127) {
-      if (idx > 0) idx--;
-    } else if ((uint8_t)c >= 32 && (uint8_t)c < 127) {
-      if (idx < sizeof(buf) - 1) buf[idx++] = c;
-      else { idx = 0; uart1.println("ERR: len"); }
-    }
+      if (len > 0) { line[len] = '\0'; executeCommand(line); len = 0; }
+    } else if (len < sizeof(line) - 1) line[len++] = c;
+    else len = 0;
   }
 }
 
 // ==============================================================================
-// 11. РАСЧЁТ КУРСОВ, TIM2 (PA0-PA3) И ПОЛЁТНЫЙ ЦИКЛ 250 ГЦ
+// 11. УПРАВЛЕНИЕ ПОЛЁТОМ, ШИМ (TIM2) И ОСНОВНОЙ ЦИКЛ (250 Гц)
 // ==============================================================================
 float calculateSuperExpoRate(float in, float r, float s, float e) {
-  float x = constrainF(in, -1.0f, 1.0f);
-  float ax = fabsf(x);
-  float exp_t = x * (e * ax * ax * ax + (1.0f - e));
-  float den = fmaxf(1.0f - (fabsf(exp_t) * s), 0.1f);
-  return (r * exp_t) / den;
+  float n = constrainF(in / 500.0f, -1.0f, 1.0f), a = fabsf(n), sgn = (n >= 0.0f) ? 1.0f : -1.0f;
+  float curve = a * ((1.0f - e) + e * (a * a * a));
+  float out = (r * 10.0f) * curve * sgn;
+  if (s > 0.0f) { float denom = 1.0f - (a * s); if (denom < 0.1f) denom = 0.1f; out /= denom; }
+  return isfinite(out) ? constrainF(out, -1.0f, 1.0f) : 0.0f;
+}
+
+float applyDeadband(float v, float db) {
+  float d = v - STICK_CENTER;
+  if (fabsf(d) <= db) return STICK_CENTER;
+  return STICK_CENTER + ((d > 0.0f) ? (d - db) : (d + db));
+}
+
+void madgwickUpdate(float gx, float gy, float gz, float ax, float ay, float az, float dt) {
+  float q0 = orientation.q0, q1 = orientation.q1, q2 = orientation.q2, q3 = orientation.q3;
+  float an = sqrtf(ax * ax + ay * ay + az * az);
+  float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
+  if (an > 1e-6f && isfinite(an)) {
+    ax /= an; ay /= an; az /= an;
+    float _2q0 = 2.0f * q0, _2q1 = 2.0f * q1, _2q2 = 2.0f * q2, _2q3 = 2.0f * q3;
+    float _4q0 = 4.0f * q0, _4q1 = 4.0f * q1, _4q2 = 4.0f * q2, _8q1 = 8.0f * q1, _8q2 = 8.0f * q2;
+    float q0q0 = q0 * q0, q1q1 = q1 * q1, q2q2 = q2 * q2, q3q3 = q3 * q3;
+    float f1 = _2q1 * q3 - _2q0 * q2 - ax, f2 = _2q0 * q1 + _2q2 * q3 - ay, f3 = 1.0f - _2q1 * q1 - _2q2 * q2 - az;
+    s0 = _4q0 * q2q2 + _2q2 * ax + _4q0 * q1q1 - _2q1 * ay;
+    s1 = _4q1 * q3q3 - _2q3 * ax + 4.0f * q0q0 * q1 - _2q0 * ay - _4q1 + _8q1 * q1q1 + _8q1 * q2q2 + _4q1 * az;
+    s2 = 4.0f * q0q0 * q2 + _2q0 * ax + _4q2 * q3q3 - _2q3 * ay - _4q2 + _8q2 * q1q1 + _8q2 * q2q2 + _4q2 * az;
+    s3 = 4.0f * q1q1 * q3 - _2q1 * ax + 4.0f * q2q2 * q3 - _2q2 * ay;
+    float sn = sqrtf(s0 * s0 + s1 * s1 + s2 * s2 + s3 * s3);
+    if (sn > 1e-9f && isfinite(sn)) { s0 /= sn; s1 /= sn; s2 /= sn; s3 /= sn; }
+    else s0 = s1 = s2 = s3 = 0.0f;
+  }
+  float beta = 0.1f;
+  if (currentConfig.flt_amb_en) {
+    float hi = constrainF(currentConfig.flt_amb, CFG_ALPHA_MIN, CFG_ALPHA_MAX);
+    float lo = constrainF(currentConfig.flt_amb_min, 0.0005f, hi);
+    beta = constrainF(hi - (vibration_index * 0.002f), lo, hi);
+  }
+  orientation.q0 = q0 + (0.5f * (-q1 * gx - q2 * gy - q3 * gz) - beta * s0) * dt;
+  orientation.q1 = q1 + (0.5f * ( q0 * gx + q2 * gz - q3 * gy) - beta * s1) * dt;
+  orientation.q2 = q2 + (0.5f * ( q0 * gy - q1 * gz + q3 * gx) - beta * s2) * dt;
+  orientation.q3 = q3 + (0.5f * ( q0 * gz + q1 * gy - q2 * gx) - beta * s3) * dt;
+  orientation.normalize();
+  if (!isfinite(orientation.q0) || !isfinite(orientation.q1) || !isfinite(orientation.q2) || !isfinite(orientation.q3)) {
+    orientation = Quaternion(); setFcErrorRam(FC_ERR_NAN_INF_MATH);
+  }
 }
 
 void setupHardwareTimers() {
-  for (uint8_t p = 0; p < 4; p++) gpioConfigPin(Reg::GPIOA, p, GPIO_AF_PP_50M);
+  gpioConfigPin(Reg::GPIOA, 0, GPIO_AF_PP_50M);
+  gpioConfigPin(Reg::GPIOA, 1, GPIO_AF_PP_50M);
+  gpioConfigPin(Reg::GPIOA, 2, GPIO_AF_PP_50M);
+  gpioConfigPin(Reg::GPIOA, 3, GPIO_AF_PP_50M);
 
-  bool oneshot = (currentConfig.esc_prot == 1);
-  Reg::TIM2->CR1 = 0U;
-  if (oneshot) {
-    Reg::TIM2->PSC = 2U;
-    Reg::TIM2->ARR = 3000U;
-  } else {
-    Reg::TIM2->PSC = 71U;
-    Reg::TIM2->ARR = 2500U;
-  }
-
+  uint16_t arr = (currentConfig.esc_prot == 1) ? 2499U : 19999U;
+  Reg::TIM2->CR1 = 0U; Reg::TIM2->PSC = 71U; Reg::TIM2->ARR = arr;
   Reg::TIM2->CCMR1 = (6U << 4) | (1U << 3) | (6U << 12) | (1U << 11);
   Reg::TIM2->CCMR2 = (6U << 4) | (1U << 3) | (6U << 12) | (1U << 11);
-
-  uint32_t pmin = oneshot ? 3000U : 1000U;
-  Reg::TIM2->CCR1 = pmin;
-  Reg::TIM2->CCR2 = pmin;
-  Reg::TIM2->CCR3 = pmin;
-  Reg::TIM2->CCR4 = pmin;
-
   Reg::TIM2->CCER = (1U << 0) | (1U << 4) | (1U << 8) | (1U << 12);
-  Reg::TIM2->EGR = (1U << 0);
-  Reg::TIM2->CR1 = (1U << 7) | (1U << 0);
+  Reg::TIM2->CCR1 = Reg::TIM2->CCR2 = Reg::TIM2->CCR3 = Reg::TIM2->CCR4 = 1000U;
+  Reg::TIM2->EGR = 1U; Reg::TIM2->CR1 = (1U << 7) | 1U;
 }
 
-void resetMotorSlewState() {
-  prev_m1_out = prev_m2_out = prev_m3_out = prev_m4_out = 0.0f;
-}
+void resetMotorSlewState() { prev_m1_out = prev_m2_out = prev_m3_out = prev_m4_out = 0.0f; }
 
-static inline float applySlewLimit(float target, float &prev, float max_step) {
-  if (!isfinite(target)) target = 0.0f;
-  float d = constrainF(target - prev, -max_step, max_step);
-  prev = constrainF(prev + d, OUTPUT_MIN, OUTPUT_MAX);
+static inline float applyMotorSlew(float target, float &prev) {
+  float lim = getEffectiveEscDeltaLimit(), t = constrainF(target, OUTPUT_MIN, OUTPUT_MAX);
+  if (!isfinite(prev)) prev = 0.0f;
+  prev = constrainF(t, prev - lim, prev + lim);
   return prev;
 }
 
-static uint32_t motorOutputToTicks(float out_val, bool oneshot) {
-  float c = constrainF(out_val, OUTPUT_MIN, OUTPUT_MAX);
-  if (oneshot) {
-    return (uint32_t)lroundf(3000.0f + (c / OUTPUT_MAX) * 3000.0f);
-  }
-  return (uint32_t)lroundf(1000.0f + (c / OUTPUT_MAX) * 1000.0f);
-}
-
 void setMotorsPower(float m1, float m2, float m3, float m4, float max_cap) {
-  bool oneshot = (currentConfig.esc_prot == 1);
-  if (!is_armed && !CliAutoCal::isFlightActive() && bench_test_mode == BENCH_TEST_NONE) {
-    uint32_t idle_t = oneshot ? 3000U : 1000U;
-    Reg::TIM2->CCR1 = idle_t; Reg::TIM2->CCR2 = idle_t;
-    Reg::TIM2->CCR3 = idle_t; Reg::TIM2->CCR4 = idle_t;
-    return;
-  }
-  float cap = constrainF(max_cap, 0.0f, OUTPUT_MAX);
-  float step_lim = getEffectiveEscDeltaLimit();
-  float o1 = applySlewLimit(constrainF(m1, 0.0f, cap), prev_m1_out, step_lim);
-  float o2 = applySlewLimit(constrainF(m2, 0.0f, cap), prev_m2_out, step_lim);
-  float o3 = applySlewLimit(constrainF(m3, 0.0f, cap), prev_m3_out, step_lim);
-  float o4 = applySlewLimit(constrainF(m4, 0.0f, cap), prev_m4_out, step_lim);
-
-  Reg::TIM2->CCR1 = motorOutputToTicks(o1, oneshot);
-  Reg::TIM2->CCR2 = motorOutputToTicks(o2, oneshot);
-  Reg::TIM2->CCR3 = motorOutputToTicks(o3, oneshot);
-  Reg::TIM2->CCR4 = motorOutputToTicks(o4, oneshot);
+  float cap = constrainF(max_cap, OUTPUT_MIN, OUTPUT_MAX);
+  uint16_t p1 = (uint16_t)constrainL(lroundf(1000.0f + constrainF(applyMotorSlew(m1, prev_m1_out), 0.0f, cap)), 1000L, 2000L);
+  uint16_t p2 = (uint16_t)constrainL(lroundf(1000.0f + constrainF(applyMotorSlew(m2, prev_m2_out), 0.0f, cap)), 1000L, 2000L);
+  uint16_t p3 = (uint16_t)constrainL(lroundf(1000.0f + constrainF(applyMotorSlew(m3, prev_m3_out), 0.0f, cap)), 1000L, 2000L);
+  uint16_t p4 = (uint16_t)constrainL(lroundf(1000.0f + constrainF(applyMotorSlew(m4, prev_m4_out), 0.0f, cap)), 1000L, 2000L);
+  Reg::TIM2->CCR1 = p1; Reg::TIM2->CCR2 = p2; Reg::TIM2->CCR3 = p3; Reg::TIM2->CCR4 = p4;
 }
 
-static void madgwickUpdateIMU(float gx, float gy, float gz, float ax, float ay, float az, float dt) {
-  float q0 = orientation.q0, q1 = orientation.q1, q2 = orientation.q2, q3 = orientation.q3;
-  float recipNorm;
-  float s0, s1, s2, s3;
-  float qDot1, qDot2, qDot3, qDot4;
-  float _2q0, _2q1, _2q2, _2q3, _4q0, _4q1, _4q2, _8q1, _8q2, q0q0, q1q1, q2q2, q3q3;
-
-  qDot1 = 0.5f * (-q1 * gx - q2 * gy - q3 * gz);
-  qDot2 = 0.5f * ( q0 * gx + q2 * gz - q3 * gy);
-  qDot3 = 0.5f * ( q0 * gy - q1 * gz + q3 * gx);
-  qDot4 = 0.5f * ( q0 * gz + q1 * gy - q2 * gx);
-
-  float an2 = ax * ax + ay * ay + az * az;
-  if (an2 > 1e-6f && isfinite(an2)) {
-    float an = sqrtf(an2);
-    float norm_err = fabsf(an - 1.0f);
-    float beta = (norm_err > 0.35f) ? 0.01f : ((norm_err > 0.15f) ? 0.04f : 0.10f);
-
-    float nax = ax / an, nay = ay / an, naz = az / an;
-    _2q0 = 2.0f * q0; _2q1 = 2.0f * q1; _2q2 = 2.0f * q2; _2q3 = 2.0f * q3;
-    _4q0 = 4.0f * q0; _4q1 = 4.0f * q1; _4q2 = 4.0f * q2;
-    _8q1 = 8.0f * q1; _8q2 = 8.0f * q2;
-    q0q0 = q0 * q0; q1q1 = q1 * q1; q2q2 = q2 * q2; q3q3 = q3 * q3;
-
-    s0 = _4q0 * q2q2 + _2q2 * nax + _4q0 * q1q1 - _2q1 * nay;
-    s1 = _4q1 * q3q3 - _2q3 * nax + 4.0f * q0q0 * q1 - _2q0 * nay - _4q1 + _8q1 * q1q1 + _8q1 * q2q2 + _4q1 * naz;
-    s2 = 4.0f * q0q0 * q2 + _2q0 * nax + _4q2 * q3q3 - _2q3 * nay - _4q2 + _8q1 * q1q1 + _8q2 * q2q2 + _4q2 * naz;
-    s3 = 4.0f * q1q1 * q3 - _2q1 * nax + 4.0f * q2q2 * q3 - _2q2 * nay;
-
-    float sn2 = s0 * s0 + s1 * s1 + s2 * s2 + s3 * s3;
-    if (sn2 > 1e-12f && isfinite(sn2)) {
-      recipNorm = 1.0f / sqrtf(sn2);
-      s0 *= recipNorm; s1 *= recipNorm; s2 *= recipNorm; s3 *= recipNorm;
-      qDot1 -= beta * s0;
-      qDot2 -= beta * s1;
-      qDot3 -= beta * s2;
-      qDot4 -= beta * s3;
-    }
-  }
-
-  q0 += qDot1 * dt;
-  q1 += qDot2 * dt;
-  q2 += qDot3 * dt;
-  q3 += qDot4 * dt;
-
-  if (!isfinite(q0) || !isfinite(q1) || !isfinite(q2) || !isfinite(q3)) {
-    setFcErrorRam(FC_ERR_NAN_INF_MATH);
-    orientation = Quaternion();
-    return;
-  }
-  orientation = {q0, q1, q2, q3};
-  orientation.normalize();
-}
-
-static void runBenchTestStep(uint32_t now_ms, float gx_rad, float gy_rad, float gz_rad) {
+void stepBenchTest(uint32_t now_ms, float gx_dps, float gy_dps, float gz_dps, float gx_rad, float gy_rad, float gz_rad) {
   if (bench_test_mode == BENCH_TEST_NONE) return;
-  if ((now_ms - bench_test_start_ms) >= BENCH_TEST_DURATION_MS) {
-    stopBenchTest();
-    uart1.println("DONE: test");
-    return;
-  }
+  if (is_armed || CliAutoCal::isFlightActive() || (now_ms - bench_test_start_ms) >= BENCH_TEST_DURATION_MS) { stopBenchTest(); return; }
+  float m1 = 0.0f, m2 = 0.0f, m3 = 0.0f, m4 = 0.0f;
   if (bench_test_mode == BENCH_TEST_MOTORS) {
-    setMotorsPower(BENCH_TEST_THROTTLE, BENCH_TEST_THROTTLE, BENCH_TEST_THROTTLE, BENCH_TEST_THROTTLE, 150.0f);
-  } else if (bench_test_mode == BENCH_TEST_PID) {
-    float rc = rollRatePID.update(-gx_rad, gx_rad, DT);
-    float pc = pitchRatePID.update(-gy_rad, gy_rad, DT);
-    float yc = yawRatePID.update(-gz_rad, gz_rad, DT);
-    float base = 120.0f;
-    setMotorsPower(base + pc + rc - yc, base + pc - rc + yc, base - pc - rc - yc, base - pc + rc + yc, 220.0f);
+    uint32_t el = now_ms - bench_test_start_ms;
+    float r = BENCH_TEST_THROTTLE * constrainF((float)el / 500.0f, 0.0f, 1.0f);
+    if (el >= 9500) r *= constrainF((float)(10000 - el) / 500.0f, 0.0f, 1.0f);
+    uint8_t ph = (uint8_t)((el / 2500) % 4);
+    if (ph == 0) m1 = r; else if (ph == 1) m2 = r; else if (ph == 2) m3 = r; else m4 = r;
+  } else {
+    float rc = rollRatePID.update(-gx_rad, gx_rad, DT), pc = pitchRatePID.update(-gy_rad, gy_rad, DT), yc = yawRatePID.update(-gz_rad, gz_rad, DT);
+    m1 = constrainF(BENCH_TEST_THROTTLE + pc + rc - yc, 0.0f, 250.0f); m2 = constrainF(BENCH_TEST_THROTTLE + pc - rc + yc, 0.0f, 250.0f);
+    m3 = constrainF(BENCH_TEST_THROTTLE - pc - rc - yc, 0.0f, 250.0f); m4 = constrainF(BENCH_TEST_THROTTLE - pc + rc + yc, 0.0f, 250.0f);
   }
+  (void)gx_dps; (void)gy_dps; (void)gz_dps;
+  setMotorsPower(m1, m2, m3, m4, 250.0f);
 }
 
 void flightControlTask() {
   uint32_t now_ms = millis();
-  if (currentConfig.fs_rtx_en && ((now_ms - last_rc_packet_ms) > FAILSAFE_TIMEOUT_MS)) {
-    is_failsafe = true;
-    setFcErrorRam(FC_ERR_RC_LOSS);
-  } else {
-    is_failsafe = false;
-  }
-
-  if (!SensorDriver::readMPU6050(mpu_dma_buffer)) {
-    err_imu_fail = true;
-    setFcErrorRam(FC_ERR_IMU_FAIL);
-    setMotorsPower(0.0f, 0.0f, 0.0f, 0.0f);
-    return;
+  if (!SensorDriver::activeSensors.imu_found || !SensorDriver::readMPU6050(mpu_dma_buffer)) {
+    err_imu_fail = true; setFcErrorRam(FC_ERR_IMU_FAIL); is_armed = false;
+    setMotorsPower(0.0f, 0.0f, 0.0f, 0.0f); return;
   }
 
   float raw_ax = (float)((int16_t)(mpu_dma_buffer[0] << 8 | mpu_dma_buffer[1])) / SensorDriver::activeSensors.acc_scale;
   float raw_ay = (float)((int16_t)(mpu_dma_buffer[2] << 8 | mpu_dma_buffer[3])) / SensorDriver::activeSensors.acc_scale;
   float raw_az = (float)((int16_t)(mpu_dma_buffer[4] << 8 | mpu_dma_buffer[5])) / SensorDriver::activeSensors.acc_scale;
-  float temp_c = SensorDriver::extractTempFromImuBuf(mpu_dma_buffer);
   float raw_gx = (float)((int16_t)(mpu_dma_buffer[8] << 8 | mpu_dma_buffer[9])) / SensorDriver::activeSensors.gyro_scale;
   float raw_gy = (float)((int16_t)(mpu_dma_buffer[10] << 8 | mpu_dma_buffer[11])) / SensorDriver::activeSensors.gyro_scale;
   float raw_gz = (float)((int16_t)(mpu_dma_buffer[12] << 8 | mpu_dma_buffer[13])) / SensorDriver::activeSensors.gyro_scale;
@@ -3033,184 +3017,147 @@ void flightControlTask() {
   SensorDriver::rotateXYByYawAlign(raw_ax, raw_ay, currentConfig.imu_align);
   SensorDriver::rotateXYByYawAlign(raw_gx, raw_gy, currentConfig.imu_align);
 
-  current_chip_temp = lpf_temp.update(temp_c);
-  float dt_temp = current_chip_temp - currentConfig.base_temperature;
+  current_chip_temp = lpf_temp.update(SensorDriver::extractTempFromImuBuf(mpu_dma_buffer));
+  float td = current_chip_temp - currentConfig.base_temperature;
+  float gx_c = raw_gx - (currentConfig.gyro_bias_x + currentConfig.temp_coeff_x * td);
+  float gy_c = raw_gy - (currentConfig.gyro_bias_y + currentConfig.temp_coeff_y * td);
+  float gz_c = raw_gz - (currentConfig.gyro_bias_z + currentConfig.temp_coeff_z * td);
+  float ax_c = raw_ax - currentConfig.acc_bias_x, ay_c = raw_ay - currentConfig.acc_bias_y, az_c = raw_az - currentConfig.acc_bias_z;
 
-  float ax_g = raw_ax - currentConfig.acc_bias_x;
-  float ay_g = raw_ay - currentConfig.acc_bias_y;
-  float az_g = raw_az - currentConfig.acc_bias_z;
+  float hpx = ax_c - lpf_xy_hp_x.update(ax_c), hpy = ay_c - lpf_xy_hp_y.update(ay_c);
+  vibration_index = 0.90f * vibration_index + 0.10f * (sqrtf(hpx * hpx + hpy * hpy) * 100.0f);
 
-  float gx_dps = raw_gx - currentConfig.gyro_bias_x - currentConfig.temp_coeff_x * dt_temp;
-  float gy_dps = raw_gy - currentConfig.gyro_bias_y - currentConfig.temp_coeff_y * dt_temp;
-  float gz_dps = raw_gz - currentConfig.gyro_bias_z - currentConfig.temp_coeff_z * dt_temp;
-
-  float hp_x = gx_dps - lpf_xy_hp_x.update(gx_dps);
-  float hp_y = gy_dps - lpf_xy_hp_y.update(gy_dps);
-  vibration_index = 0.85f * vibration_index + 0.15f * sqrtf(hp_x * hp_x + hp_y * hp_y);
-
-  float fx_g = ax_g, fy_g = ay_g, fz_g = az_g;
-  float fgx = gx_dps, fgy = gy_dps, fgz = gz_dps;
-
-  if (currentConfig.flt_lpf_en) {
-    fx_g = lpf_ax.update(fx_g);
-    fy_g = lpf_ay.update(fy_g);
-    fz_g = lpf_az.update(fz_g);
-    fgx = lpf_gx.update(fgx);
-    fgy = lpf_gy.update(fgy);
-    fgz = lpf_gz.update(fgz);
-  }
+  float ax_f = currentConfig.flt_lpf_en ? lpf_ax.update(ax_c) : ax_c;
+  float ay_f = currentConfig.flt_lpf_en ? lpf_ay.update(ay_c) : ay_c;
+  float az_f = currentConfig.flt_lpf_en ? lpf_az.update(az_c) : az_c;
+  float gx_f = currentConfig.flt_lpf_en ? lpf_gx.update(gx_c) : gx_c;
+  float gy_f = currentConfig.flt_lpf_en ? lpf_gy.update(gy_c) : gy_c;
+  float gz_f = currentConfig.flt_lpf_en ? lpf_gz.update(gz_c) : gz_c;
 
   if (currentConfig.flt_not_en) {
-    float dyn_freq = currentConfig.filter_notch_freq;
-    if (currentConfig.flt_amb_en) {
-      float amb = constrainF(currentConfig.flt_amb, 0.001f, 1.0f);
-      float amb_min = constrainF(currentConfig.flt_amb_min, 0.0005f, amb);
-      float scale = constrainF(1.0f - (vibration_index / 120.0f), amb_min / amb, 1.0f);
-      dyn_freq = constrainF(currentConfig.filter_notch_freq * scale, 40.0f, 115.0f);
-    }
-    notch_gx.setParameters(250.0f, dyn_freq, currentConfig.filter_notch_bw, false);
-    notch_gy.setParameters(250.0f, dyn_freq, currentConfig.filter_notch_bw, false);
-    notch_gz.setParameters(250.0f, dyn_freq, currentConfig.filter_notch_bw, false);
-    fgx = notch_gx.update(fgx);
-    fgy = notch_gy.update(fgy);
-    fgz = notch_gz.update(fgz);
+    notch_gx.setParameters(250.0f, currentConfig.filter_notch_freq, currentConfig.filter_notch_bw);
+    notch_gy.setParameters(250.0f, currentConfig.filter_notch_freq, currentConfig.filter_notch_bw);
+    notch_gz.setParameters(250.0f, currentConfig.filter_notch_freq, currentConfig.filter_notch_bw);
+    gx_f = notch_gx.update(gx_f); gy_f = notch_gy.update(gy_f); gz_f = notch_gz.update(gz_f);
   }
 
-  float gx_rad = fgx * FC_DEG_TO_RAD;
-  float gy_rad = fgy * FC_DEG_TO_RAD;
-  float gz_rad = fgz * FC_DEG_TO_RAD;
-
-  madgwickUpdateIMU(gx_rad, gy_rad, gz_rad, fx_g, fy_g, fz_g, DT);
+  float gx_r = gx_f * FC_DEG_TO_RAD, gy_r = gy_f * FC_DEG_TO_RAD, gz_r = gz_f * FC_DEG_TO_RAD;
+  madgwickUpdate(gx_r, gy_r, gz_r, ax_f, ay_f, az_f, DT);
 
   float q0 = orientation.q0, q1 = orientation.q1, q2 = orientation.q2, q3 = orientation.q3;
-  float roll_deg = atan2f(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2)) * FC_RAD_TO_DEG;
-  float pitch_deg = asinf(constrainF(2.0f * (q0 * q2 - q3 * q1), -1.0f, 1.0f)) * FC_RAD_TO_DEG;
-
-  CliAutoCal::onAttitudeAndMotion(ax_g, ay_g, az_g, roll_deg, pitch_deg, gx_dps, gy_dps);
+  float r_deg = atan2f(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2)) * FC_RAD_TO_DEG;
+  float p_deg = asinf(constrainF(2.0f * (q0 * q2 - q3 * q1), -1.0f, 1.0f)) * FC_RAD_TO_DEG;
+  CliAutoCal::onAttitudeAndMotion(ax_c, ay_c, az_c, r_deg, p_deg, gx_f, gy_f);
 
   float m1 = 0.0f, m2 = 0.0f, m3 = 0.0f, m4 = 0.0f;
-  if (CliAutoCal::stepFlight(now_ms, gx_dps, gy_dps, gz_dps, gx_rad, gy_rad, gz_rad, roll_deg, pitch_deg, m1, m2, m3, m4)) {
-    setMotorsPower(m1, m2, m3, m4);
-    return;
+  if (CliAutoCal::stepFlight(now_ms, gx_f, gy_f, gz_f, gx_r, gy_r, gz_r, r_deg, p_deg, m1, m2, m3, m4)) {
+    setMotorsPower(m1, m2, m3, m4); return;
   }
+  if (bench_test_mode != BENCH_TEST_NONE) { stepBenchTest(now_ms, gx_f, gy_f, gz_f, gx_r, gy_r, gz_r); return; }
 
-  if (bench_test_mode != BENCH_TEST_NONE) {
-    runBenchTestStep(now_ms, gx_rad, gy_rad, gz_rad);
-    return;
-  }
-
-  handleMotorArmStateAndEepromError();
+  if ((now_ms - last_rc_packet_ms) > FAILSAFE_TIMEOUT_MS) {
+    if (!is_failsafe) { is_failsafe = true; err_rc_loss = true; setFcErrorRam(FC_ERR_RC_LOSS); }
+  } else { is_failsafe = false; err_rc_loss = false; }
 
   if (!is_armed) {
-    arm_ramp_factor = 0.0f;
-    setMotorsPower(0.0f, 0.0f, 0.0f, 0.0f);
-    return;
+    arm_ramp_factor = 0.0f; vzPID.reset(); rollRatePID.reset(); pitchRatePID.reset(); yawRatePID.reset();
+    resetMotorSlewState(); setMotorsPower(0.0f, 0.0f, 0.0f, 0.0f); return;
   }
 
-  if (arm_ramp_factor < 1.0f) {
-    arm_ramp_factor = constrainF(arm_ramp_factor + (DT / 0.40f), 0.0f, 1.0f);
-  }
+  arm_ramp_factor = constrainF(arm_ramp_factor + (DT / 0.35f), 0.0f, 1.0f);
+  float rc_r = applyDeadband(smooth_roll, currentConfig.rc_deadband);
+  float rc_p = applyDeadband(smooth_pitch, currentConfig.rc_deadband);
+  float rc_y = applyDeadband(smooth_yaw, currentConfig.rc_deadband);
 
-  float r_norm = (smooth_roll - STICK_CENTER) / STICK_CENTER;
-  float p_norm = (smooth_pitch - STICK_CENTER) / STICK_CENTER;
-  float y_norm = (smooth_yaw - STICK_CENTER) / STICK_CENTER;
+  float rr = calculateSuperExpoRate(rc_r, currentConfig.rc_rate, currentConfig.rc_super_expo, currentConfig.rc_stick_expo);
+  float pr = calculateSuperExpoRate(rc_p, currentConfig.rc_rate, currentConfig.rc_super_expo, currentConfig.rc_stick_expo);
+  float yr = calculateSuperExpoRate(rc_y, currentConfig.rc_yaw_rate, currentConfig.rc_yaw_super_expo, currentConfig.rc_yaw_expo);
 
-  float db = currentConfig.rc_deadband / STICK_CENTER;
-  if (fabsf(r_norm) < db) r_norm = 0.0f;
-  if (fabsf(p_norm) < db) p_norm = 0.0f;
-  if (fabsf(y_norm) < db) y_norm = 0.0f;
-
-  float target_gx_rad = calculateSuperExpoRate(r_norm, currentConfig.rc_rate, currentConfig.rc_super_expo, currentConfig.rc_stick_expo) * MAX_RATE_DPS_PER_UNIT * FC_DEG_TO_RAD;
-  float target_gy_rad = calculateSuperExpoRate(p_norm, currentConfig.rc_rate, currentConfig.rc_super_expo, currentConfig.rc_stick_expo) * MAX_RATE_DPS_PER_UNIT * FC_DEG_TO_RAD;
-  float target_gz_rad = calculateSuperExpoRate(y_norm, currentConfig.rc_yaw_rate, currentConfig.rc_yaw_super_expo, currentConfig.rc_yaw_expo) * MAX_RATE_DPS_PER_UNIT * FC_DEG_TO_RAD;
-
+  float tgx = rr * MAX_RATE_DPS_PER_UNIT * FC_DEG_TO_RAD, tgy = pr * MAX_RATE_DPS_PER_UNIT * FC_DEG_TO_RAD, tgz = yr * MAX_RATE_DPS_PER_UNIT * FC_DEG_TO_RAD;
   if (currentConfig.fm_mode == 1 || currentConfig.fm_mode == 2) {
-    float stick_mag = fmaxf(fabsf(r_norm), fabsf(p_norm));
-    float angle_weight = 1.0f;
-    if (currentConfig.fm_mode == 2 && currentConfig.rc_horizon_transition > 0.05f) {
-      angle_weight = constrainF(1.0f - (stick_mag / currentConfig.rc_horizon_transition), 0.0f, 1.0f);
+    float tr = rr * currentConfig.fm_roll_max, tp = pr * currentConfig.fm_pitch_max;
+    if (currentConfig.fm_mode == 2) {
+      float b = constrainF(fmaxf(fabsf(rc_r - STICK_CENTER), fabsf(rc_p - STICK_CENTER)) / 500.0f, 0.0f, 1.0f);
+      float w = (currentConfig.rc_horizon_transition > 0.01f) ? constrainF(b / currentConfig.rc_horizon_transition, 0.0f, 1.0f) : 1.0f;
+      tgx = w * tgx + (1.0f - w) * ((tr - r_deg) * 3.0f * FC_DEG_TO_RAD);
+      tgy = w * tgy + (1.0f - w) * ((tp - p_deg) * 3.0f * FC_DEG_TO_RAD);
+    } else {
+      tgx = (tr - r_deg) * 3.0f * FC_DEG_TO_RAD; tgy = (tp - p_deg) * 3.0f * FC_DEG_TO_RAD;
     }
-    float cmd_roll_deg = -r_norm * currentConfig.fm_roll_max;
-    float cmd_pitch_deg = -p_norm * currentConfig.fm_pitch_max;
-    float angle_gx_rad = (cmd_roll_deg - roll_deg) * 2.5f * FC_DEG_TO_RAD;
-    float angle_gy_rad = (cmd_pitch_deg - pitch_deg) * 2.5f * FC_DEG_TO_RAD;
-    target_gx_rad = angle_weight * angle_gx_rad + (1.0f - angle_weight) * target_gx_rad;
-    target_gy_rad = angle_weight * angle_gy_rad + (1.0f - angle_weight) * target_gy_rad;
   }
 
-  float thr = is_failsafe ? 0.0f : constrainF(smooth_throttle, 0.0f, OUTPUT_MAX);
+  float thr = smooth_throttle;
   if (is_failsafe && currentConfig.fs_rtx_en) {
-    float vz_err = (-currentConfig.fs_vz_speed) - baro_vz_mps;
-    thr = constrainF(base_hover_throttle + vzPID.update(vz_err, baro_vz_mps, DT), 0.0f, 650.0f);
+    float lm = 0.0f; bool lok = (SensorDriver::readLidar(lm) && lm <= SensorDriver::getEffectiveLidarMaxM());
+    float dvz = -currentConfig.fs_vz_speed * ((lok && lm < 0.35f) ? 0.50f : 1.0f);
+    thr = constrainF(base_hover_throttle + vzPID.update(dvz - (lok ? current_vz : baro_vz_mps), lok ? current_vz : baro_vz_mps, DT), 0.0f, 750.0f);
+    if (lok && lm <= 0.07f) { is_armed = false; setMotorsPower(0.0f, 0.0f, 0.0f, 0.0f); return; }
   }
 
-  thr *= getBatteryCompensationFactor() * arm_ramp_factor;
+  float ct = thr * getBatteryCompensationFactor() * arm_ramp_factor;
+  bool sat = (ct <= 10.0f || ct >= 950.0f);
+  float rc = rollRatePID.update(tgx - gx_r, gx_r, DT, sat), pc = pitchRatePID.update(tgy - gy_r, gy_r, DT, sat), yc = yawRatePID.update(tgz - gz_r, gz_r, DT, sat);
 
-  float rc = rollRatePID.update(target_gx_rad - gx_rad, gx_rad, DT);
-  float pc = pitchRatePID.update(target_gy_rad - gy_rad, gy_rad, DT);
-  float yc = yawRatePID.update(target_gz_rad - gz_rad, gz_rad, DT);
-
-  m1 = thr + pc + rc - yc;
-  m2 = thr + pc - rc + yc;
-  m3 = thr - pc - rc - yc;
-  m4 = thr - pc + rc + yc;
-
-  setMotorsPower(m1, m2, m3, m4);
+  setMotorsPower(ct + pc + rc - yc, ct + pc - rc + yc, ct - pc - rc - yc, ct - pc + rc + yc);
 }
 
-// ==============================================================================
-// 12. ИНИЦИАЛИЗАЦИЯ И ГЛАВНЫЙ ЦИКЛ
-// ==============================================================================
-static void enablePeripheralClocks() {
+void setup() {
   Reg::RCC->APB2ENR |= (1U << 0) | (1U << 2) | (1U << 3) | (1U << 9) | (1U << 14);
   Reg::RCC->APB1ENR |= (1U << 0) | (1U << 14) | (1U << 18) | (1U << 21);
+
+  gpioConfigPin(Reg::GPIOA, 9, GPIO_AF_PP_50M);
+  gpioConfigPin(Reg::GPIOA, 10, GPIO_IN_PULL, true);
+  uart1.begin(SERIAL_BAUD_RATE);
+  delay(200);
+
+  initI2c1(); initAdc1(); loadSettings(); setupHardwareTimers();
+  CliAutoCal::init(); applyFilterConfig(); SensorDriver::autoDetectAll();
+  rtx_init_hardware(); applyRtxConfiguration(false); vtxInit();
+  last_rc_packet_ms = millis();
+  uart1.println("READY");
 }
 
-int main(void) {
-  enablePeripheralClocks();
-  uart1.begin(SERIAL_BAUD_RATE);
-  initI2c1();
-  initAdc1();
-  loadSettings();
-  setupHardwareTimers();
-  applyFilterConfig();
-  CliAutoCal::init();
-  SensorDriver::autoDetectAll();
-  vtxInit();
-  if (currentConfig.rtx_en) {
-    rtx_init_hardware();
-    main_rtx_chan = active_rtx_chan = (uint8_t)constrainI(currentConfig.rtx_pri_chan, 0, 99);
-    is_on_backup = false;
-    applyRtxConfiguration(false);
+void loop() {
+  uint32_t loop_start_us = micros();
+  uint32_t now_ms = millis();
+
+  parseCli();
+  CliAutoCal::pollButton(now_ms);
+  handleMotorArmStateAndEepromError();
+  stepMagCalibrationNonBlocking(now_ms);
+  stepMonitorStreamNonBlocking(now_ms);
+  serviceError202Event(now_ms);
+
+  static uint32_t last_loop_us = 0;
+  if (last_loop_us == 0) last_loop_us = loop_start_us;
+  if ((loop_start_us - last_loop_us) >= LOOP_INTERVAL_US) {
+    last_loop_us += LOOP_INTERVAL_US;
+    if ((loop_start_us - last_loop_us) > LOOP_INTERVAL_US) last_loop_us = loop_start_us;
+    flightControlTask();
+    uint32_t ex_us = micros() - loop_start_us;
+    float ld = ((float)ex_us / (float)LOOP_INTERVAL_US) * 100.0f;
+    cpu_load_pct = 0.85f * cpu_load_pct + 0.15f * ld;
+    if (ld > cpu_max_load_pct) cpu_max_load_pct = ld;
+    if (ex_us > (LOOP_INTERVAL_US + LOOP_OVERRUN_MARGIN_US)) setFcErrorRam(FC_ERR_LOOP_OVERRUN);
   }
-  uart1.println("OK: boot");
 
-  uint32_t last_loop_us = micros();
-  while (true) {
-    uint32_t now_us = micros();
-    if ((now_us - last_loop_us) >= LOOP_INTERVAL_US) {
-      uint32_t loop_start = now_us;
-      last_loop_us = now_us - ((now_us - last_loop_us) % LOOP_INTERVAL_US);
+  updateAuxSensorsNonBlocking(now_ms);
+  vtxStepNonBlocking(now_ms);
 
-      flightControlTask();
-
-      uint32_t now_ms = millis();
-      CliAutoCal::pollButton(now_ms);
-      updateAuxSensorsNonBlocking(now_ms);
-      stepMagCalibrationNonBlocking(now_ms);
-      serviceError202Event(now_ms);
-      vtxStepNonBlocking(now_ms);
-      stepChannelScanNonBlocking();
-      pollTelemetryTxState();
-      if (!rtx_tx_in_flight && !rtx_scan_active && currentConfig.rtx_en) readRx();
-      if (!rtx_tx_in_flight && !rtx_scan_active && send_telemetry_pending && currentConfig.rtx_en) startTelemetryNonBlocking();
-      parseCli();
-      stepMonitorStreamNonBlocking(now_ms);
-
-      uint32_t exec_us = micros() - loop_start;
-      cpu_load_pct = constrainF(((float)exec_us / (float)LOOP_INTERVAL_US) * 100.0f, 0.0f, 100.0f);
-      if (cpu_load_pct > cpu_max_load_pct) cpu_max_load_pct = cpu_load_pct;
-      if (exec_us > (LOOP_INTERVAL_US + LOOP_OVERRUN_MARGIN_US)) setFcErrorRam(FC_ERR_LOOP_OVERRUN);
+  if (currentConfig.rtx_en) {
+    pollTelemetryTxState();
+    stepChannelScanNonBlocking();
+    readRx();
+    if (!rtx_tx_in_flight && !rtx_scan_active && !rtx_recovering && (send_telemetry_pending || hasQueuedRtxResponse())) {
+      startTelemetryNonBlocking();
     }
+  }
+}
+
+extern "C" int main(void) {
+  SystemInit();
+  setup();
+  for (;;) {
+    loop();
   }
 }
